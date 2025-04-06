@@ -6,6 +6,9 @@ import threading
 from instantneo.skills import SkillManager
 from instantneo.utils.image_utils import process_images
 from instantneo.utils.skill_utils import format_tool
+#tracker
+from instantneo.tracking.session_tracker import SessionTracker
+
 
 
 @dataclass(kw_only=True)
@@ -184,6 +187,7 @@ class InstantNeo:
         stream: bool = False,
         images: Optional[Union[str, List[str]]] = None,
         image_detail: str = "auto",
+        
     ):
         """Initialize an InstantNeo instance."""
         self.config = InstantNeoParams(
@@ -218,6 +222,8 @@ class InstantNeo:
         self.adapter = self._create_adapter()
         self.tool_calls = []  # For accumulating tool calls in streaming
         self.async_execution = False  # Default value, will be set in run method
+        #Tracker
+        self.tracker: Optional[SessionTracker] = None
 
     ##################################
     #         PUBLIC METHODS         #
@@ -306,7 +312,7 @@ class InstantNeo:
             metadata_filter (Optional[Callable[[Dict[str, Any]], bool]], optional): A function to filter skills by metadata. Defaults to None."""
         return self.skill_manager._load_skills_from_folder(folder_path, metadata_filter)
 
-
+    
 
     ##### Skill Operations #####
 
@@ -391,6 +397,58 @@ a dictionary with common and unique skills. It does not modify the internal skil
 
         return SkillManagerOperations.compare(self.skill_manager, otro_skill_manager)
 
+    #####################
+    #      TRACKING     #
+    #####################
+
+    def _log_session_metadata(self, run_params: RunParams):
+        """Registra en el tracker la configuración del agente y los parámetros del run."""
+        if self.tracker and self.tracker.has_active_session():
+            from instantneo.tracking.tracking_utils import get_config_snapshot, get_run_params_snapshot
+            self.tracker._current_session["metadata"]["agent_config"] = get_config_snapshot(self)
+            self.tracker._current_session["metadata"]["run_params"] = get_run_params_snapshot(run_params)
+
+    def _log_run_result(self, prompt: str, output: Any, skills: List[str]):
+        if not (self.tracker and self.tracker.has_active_session()):
+            return
+
+        log_data = {
+            "input": prompt,
+            "skills": skills,
+            "origin": "run",
+        }
+
+        if isinstance(output, list) and all("name" in r and "result" in r and "arguments" in r for r in output):
+            log_data["result_type"] = "skill_result"
+            log_data["executed_skills"] = output
+            log_data["output"] = output  # ✅ añadimos output obligatorio
+
+        elif isinstance(output, dict) and "name" in output and "result" in output and "arguments" in output:
+            log_data["result_type"] = "skill_result"
+            log_data["executed_skills"] = [output]
+            log_data["output"] = [output]  # ✅ lista para mantener consistencia
+
+        else:
+            log_data["result_type"] = "model_response"
+            log_data["output"] = output
+
+        self.tracker.log(**log_data)
+
+    def _log_run_error(self, prompt: str, skills: List[str], exception: Exception):
+        """Registra en el tracker una ejecución con error."""
+        if self.tracker and self.tracker.has_active_session():
+            self.tracker.log(
+                input=prompt,
+                output=None,
+                origin="error",
+                skills=skills,
+                exception=str(exception)
+        )
+    
+    #####################
+    #        RUN        #
+    #####################
+
     def run(
         self,
         prompt: str,
@@ -464,7 +522,8 @@ Args:
             images=images if images is not None else self.config.images,
             image_detail=image_detail if image_detail is not None else self.config.image_detail,
         )
-
+        #Tracker
+        self._log_session_metadata(run_params)
         # Add any additional parameters
         # No need to add again, already handled when creating run_params
         # for key, value in additional_params.items():
@@ -500,11 +559,28 @@ Args:
                     adapter_params.additional_params['tool_choice'] = run_params.additional_params['tool_choice']
 
         #print("Adapter params:", json.dumps(adapter_params.to_dict(), indent=2))
+        try:
+            if run_params.stream:
+                output = self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response)
+            else:
+                output = self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response)
+            # Tracker: registrar resultado final del run
+            self._log_run_result(
+                prompt=run_params.prompt,
+                output=output,
+                skills=skills_to_use
+            )
 
-        if run_params.stream:
-            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response)
-        else:
-            return self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response)
+            return output
+        
+        except Exception as e:
+            # Tracker: registrar error en el run
+            self._log_run_error(
+                prompt=run_params.prompt,
+                skills=skills_to_use,
+                exception=e
+            )
+            raise   
 
     #################################
     #        PRIVATE METHODS        #
@@ -674,15 +750,31 @@ Args:
         if skill is None:
             raise ValueError(f"Skill not found: {skill_name}")
         #print(f"DEBUG: _execute_skill llamado para {skill_name} con async_execution={self.async_execution}")
+        skill_func = next(iter(skill.values())) if isinstance(skill, dict) else skill
+        print(f"DEBUG: _execute_skill llamado para {skill_name} con async_execution={self.async_execution}")
+        print(f"DEBUG: ----> skill_func ------> {skill_func}")
         if self.async_execution:
             #print(f"ASYNC_EXECUTION: Preparando {skill_name} para ejecución asíncrona")
             # Solo preparamos la función para ejecución asíncrona, no la ejecutamos todavía
             loop = asyncio.get_event_loop()
-            return loop.run_in_executor(None, lambda skill, arguments: (next(iter(skill.values())) if isinstance(skill, dict) else skill)(**arguments), skill, arguments)
+            return loop.run_in_executor(None, self._run_and_track_skill_return_payload, skill_name, skill_func, arguments)
         else:
-            #print(f"SYNC_EXECUTION: Ejecutando {skill_name} de forma síncrona")
-            skill = next(iter(skill.values())) if isinstance(skill, dict) else skill
-            return skill(**arguments)
+            return self._run_and_track_skill_return_payload(skill_name, skill_func, arguments)
+    
+    def _run_and_track_skill_return_payload(self, skill_name, skill_func, arguments):
+        try:
+            result = skill_func(**arguments)
+            return {
+                "name": skill_name,
+                "arguments": arguments,
+                "result": result
+            }
+        except Exception as e:
+            return {
+                "name": skill_name,
+                "arguments": arguments,
+                "exception": str(e)
+            }
 
     def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool):
         """Handle streaming responses from the language model."""
@@ -813,6 +905,17 @@ Args:
                     yield results[0] if len(results) == 1 else results
 
         if return_full_response:
+            # --- TRACKER LOG ---
+            if self.tracker and self.tracker.has_active_session():
+                # Último mensaje de usuario, normalmente el prompt original
+                prompt_input = adapter_params.messages[-1]["content"]
+                self.tracker.log(
+                    input=prompt_input,
+                    output=full_response,
+                    origin="model",
+                    skills=[],  # skills ya fueron trackeadas por separado
+                    exception=None
+                )
             yield {
                 "content": full_response,
                 "tool_calls": tool_calls
