@@ -22,3 +22,17 @@ try:
     __all__.append('GroqAdapter')
 except ImportError:
     GroqAdapter = None
+
+# Intentar importar GeminiAPIAdapter si está disponible
+try:
+    from .gemini_api_adapter import GeminiAPIAdapter
+    __all__.append('GeminiAPIAdapter')
+except ImportError:
+    GeminiAPIAdapter = None
+
+# Intentar importar VertexAIAdapter si está disponible
+try:
+    from .vertex_ai_adapter import VertexAIAdapter
+    __all__.append('VertexAIAdapter')
+except ImportError:
+    VertexAIAdapter = None
