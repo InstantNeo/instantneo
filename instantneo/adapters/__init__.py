@@ -22,3 +22,9 @@ try:
     __all__.append('GroqAdapter')
 except ImportError:
     GroqAdapter = None
+
+try:
+    from .gemini_adapter import GeminiAdapter
+    __all__.append('GeminiAdapter')
+except ImportError:
+    GeminiAdapter = None

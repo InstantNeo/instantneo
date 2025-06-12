@@ -50,6 +50,12 @@ try:
 except ImportError:
     GroqAdapter = None
 
+# Después de línea ~25
+try:
+    from .adapters.gemini_adapter import GeminiAdapter
+except ImportError:
+    GeminiAdapter = None
+
 # Namespace para Skills
 class Skills:
     """Skills toolkit"""
@@ -63,6 +69,7 @@ class Adapters:
     Groq = GroqAdapter
     Openai = OpenAIAdapter
     Anthropic = AnthropicAdapter
+    Gemini = GeminiAdapter
 
 # Definir qué se exporta
 __all__ = ["InstantNeo", "Skills", "Adapters"]

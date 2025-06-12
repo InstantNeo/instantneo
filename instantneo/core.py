@@ -521,6 +521,7 @@ Args:
             stream=stream,
             images=images if images is not None else self.config.images,
             image_detail=image_detail if image_detail is not None else self.config.image_detail,
+            additional_params=additional_params
         )
         #Tracker
         self._log_session_metadata(run_params)
@@ -936,6 +937,8 @@ Args:
             "openai": ("instantneo.adapters.openai_adapter", "OpenAIAdapter"),
             "anthropic": ("instantneo.adapters.anthropic_adapter", "AnthropicAdapter"),
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
+            "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),  # Nuevo
+
         }
 
         if self.config.provider not in adapter_map:
