@@ -1,4 +1,4 @@
-from openai import AzureOpenAI, AzureOpenAIError
+from openai import AzureOpenAI, OpenAIError
 from typing import Dict, Any, Generator
 from instantneo.adapters.base_adapter import BaseAdapter
 
@@ -16,7 +16,7 @@ class AzureOpenAIAdapter(BaseAdapter):
         try:
             response = self.client.chat.completions.create(**cleaned_kwargs)
             return response
-        except AzureOpenAIError as e:
+        except OpenAIError as e:
             raise RuntimeError(f"Error in Azure OpenAI API: {str(e)}")
 
     def create_streaming_chat_completion(self, **kwargs) -> Generator[Dict[str, Any], None, None]:
