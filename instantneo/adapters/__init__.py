@@ -22,3 +22,10 @@ try:
     __all__.append('GroqAdapter')
 except ImportError:
     GroqAdapter = None
+
+# Intentar importar AzureOpenAIAdapter si está disponible
+try:
+    from .azure_openai_adapter import AzureOpenAIAdapter
+    __all__.append('AzureOpenAIAdapter')
+except ImportError:
+    AzureOpenAIAdapter = None

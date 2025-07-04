@@ -31,6 +31,8 @@ class InstantNeoParams(BaseParams):
     skills: Optional[Union[List[str], SkillManager]] = None
     images: Optional[Union[str, List[str]]] = None
     image_detail: str = "auto"
+    azure_endpoint: Optional[str] = None
+    api_version: Optional[str] = None
 
 
 @dataclass
@@ -184,6 +186,8 @@ class InstantNeo:
         stream: bool = False,
         images: Optional[Union[str, List[str]]] = None,
         image_detail: str = "auto",
+        azure_endpoint: Optional[str] = None,
+        api_version: Optional[str] = None,
     ):
         """Initialize an InstantNeo instance."""
         self.config = InstantNeoParams(
@@ -202,6 +206,8 @@ class InstantNeo:
             stream=stream,
             images=images,
             image_detail=image_detail,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
         )
 
         # print(f"Tipo de 'self.config.skills': {type(self.config.skills)}")
@@ -833,6 +839,7 @@ Args:
             "openai": ("instantneo.adapters.openai_adapter", "OpenAIAdapter"),
             "anthropic": ("instantneo.adapters.anthropic_adapter", "AnthropicAdapter"),
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
+            "azure_openai": ("instantneo.adapters.azure_openai_adapter", "AzureOpenAIAdapter"),
         }
 
         if self.config.provider not in adapter_map:
@@ -842,4 +849,7 @@ Args:
         module = __import__(module_path, fromlist=[class_name])
         adapter_class = getattr(module, class_name)
 
-        return adapter_class(self.config.api_key)
+        if self.config.provider == "azure_openai":
+            return adapter_class(self.config.api_key, azure_endpoint=self.config.azure_endpoint, api_version=self.config.api_version)
+        else:
+            return adapter_class(self.config.api_key)
