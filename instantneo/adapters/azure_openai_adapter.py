@@ -34,6 +34,9 @@ class AzureOpenAIAdapter(BaseAdapter):
     def _clean_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         cleaned_kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
+        cleaned_kwargs['max_completion_tokens'] = cleaned_kwargs['max_tokens']
+        del cleaned_kwargs['max_tokens']
+
         if 'tools' in cleaned_kwargs and not cleaned_kwargs['tools']:
             del cleaned_kwargs['tools']
 
