@@ -33,7 +33,7 @@ class GroqAdapter(BaseAdapter):
         }
 
     def supports_images(self) -> bool:
-        return False  # Según la documentación proporcionada, Groq no soporta imágenes
+        return True  # Groq soporta imágenes con modelos de visión
 
     # Sobrescribimos estos métodos para asegurarnos de que son compatibles con Groq
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
