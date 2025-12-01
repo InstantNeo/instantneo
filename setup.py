@@ -17,7 +17,7 @@ if is_direct_install:
 
 setup(
     name='instantneo',
-    version='0.1.1', 
+    version='0.1.2', 
     packages=find_packages(),
     install_requires=install_requires,
     extras_require={
