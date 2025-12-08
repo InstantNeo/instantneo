@@ -20,14 +20,30 @@ class SkillManagerOperations:
     def union(*managers: "SkillManager") -> "SkillManager":
         """
         Devuelve un SkillManager que contiene la unión de todos
-        los skills registrados en los managers pasados.
+        los skills registrados en los managers pasados y concatena sus instrucciones.
         """
         unified_manager = SkillManager()
+        collected_instructions = []
+        seen_instructions = set()
+
         for m in managers:
+            # 1. Unir Skills
             for func in m.registry.values():
                 unified_manager.register_skill(func)
+                
+            # 2. Unir Instrucciones
+            if hasattr(m, 'get_global_instructions'):
+                instr = m.get_global_instructions()
+                if instr and instr not in seen_instructions:
+                    collected_instructions.append(instr)
+                    seen_instructions.add(instr)
+        
+        if collected_instructions:
+            final_instructions = "\n\n".join(collected_instructions)
+            unified_manager.set_global_instructions(final_instructions)
+            
         return unified_manager
-
+    
     @staticmethod
     def intersection(*managers: "SkillManager") -> "SkillManager":
         """

@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from instantneo.skills import SkillManager
+from instantneo.skills.skill_manager_operations import SkillManagerOperations
 from instantneo.utils.image_utils import process_images
 from instantneo.utils.skill_utils import format_tool
 
@@ -28,7 +29,7 @@ class InstantNeoParams(BaseParams):
     provider: str
     api_key: str
     role_setup: str
-    skills: Optional[Union[List[str], SkillManager]] = None
+    skills: Optional[Union[List[str], SkillManager, List[SkillManager]]] = None
     images: Optional[Union[str, List[str]]] = None
     image_detail: str = "auto"
 
@@ -173,7 +174,7 @@ class InstantNeo:
         api_key: str,
         model: str,
         role_setup: str,
-        skills: Optional[Union[List[str], SkillManager]] = None,
+        skills: Optional[Union[List[str], SkillManager, List[SkillManager]]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = 200,
         presence_penalty: Optional[float] = None,
@@ -207,13 +208,46 @@ class InstantNeo:
         # print(f"Tipo de 'self.config.skills': {type(self.config.skills)}")
 
         # Initialize skill manager
-        if isinstance(self.config.skills, SkillManager):
-            self.skill_manager = self.config.skills
-        else:
-            self.skill_manager = SkillManager()
-            if self.config.skills and isinstance(self.config.skills, list):
-                for skill in self.config.skills:
-                    self.skill_manager.register_skill(skill)
+        skills_input = self.config.skills        
+
+        if isinstance(skills_input, SkillManager):
+                    # Caso 1: Un solo SkillManager -> Asignación directa
+                    self.skill_manager = skills_input
+        elif isinstance(skills_input, list):
+            if all(isinstance(s, SkillManager) for s in skills_input):
+                # Caso 2: Lista de SkillManagers -> Usar la unión (maneja la concatenación de instrucciones)
+                self.skill_manager = SkillManagerOperations.union(*skills_input)
+            elif all(callable(s) or isinstance(s, str) for s in skills_input):
+                # Caso 3: Lista de funciones -> Crear un manager y registrar funciones
+                self.skill_manager = SkillManager()
+                for skill_func in skills_input:
+                    self.skill_manager.register_skill(skill_func)
+            else:
+                # Caso 4: Lista mixta o no válida
+                raise TypeError(
+                    "Invalid skill list format. 'skills' must be a single SkillManager, "
+                    "a list of SkillManagers, or a list of functions/skill names (str). "
+                    "Mixed types in the list are not allowed."
+                )
+        else: # skills is None
+                    # Caso 5: skills es None
+                self.skill_manager = SkillManager()
+
+        # Extracción y concatenación de instrucciones globales del SkillManager
+        final_instructions = ""
+        #Obtenemos las instrucciones globales del SkillManager
+        if hasattr(self.skill_manager, 'get_global_instructions'):
+            final_instructions = self.skill_manager.get_global_instructions()
+
+        self.skill_instructions = ""
+        if final_instructions and final_instructions.strip():
+            # Concatenamos las instrucciones con un titular que indica el inicio de las instrucciones
+            self.skill_instructions = f"""
+            ###################################
+            ## SKILLS AND TOOLS INSTRUCTIONS ##
+            ###################################
+
+            {final_instructions.strip()}"""
 
         self.adapter = self._create_adapter()
         self.tool_calls = []  # For accumulating tool calls in streaming
@@ -548,9 +582,12 @@ Args:
     def _prepare_messages(self, prompt: str, image_config: Optional[ImageConfig] = None) -> List[Dict[str, Any]]:
         """Prepare messages for the language model."""
         messages = []
+        final_role_setup = self.config.role_setup
+        if hasattr(self, 'skill_instructions') and self.skill_instructions:
+            final_role_setup = f"{self.config.role_setup}{self.skill_instructions}"
         if self.config.role_setup:
             messages.append(
-                {"role": "system", "content": self.config.role_setup})
+                {"role": "system", "content": final_role_setup})
         if image_config and image_config.images:
             content = [{"type": "text", "text": prompt}]
             content.extend(process_images(
