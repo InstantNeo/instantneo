@@ -46,19 +46,21 @@ class GeminiAdapter(BaseAdapter):
 
     Soporta dos backends:
     - GeminiClient: Para Gemini API (ai.google.dev) con API Key
-    - VertexAIClient: Para Vertex AI con OAuth/Service Account
+    - VertexAIClient: Para Vertex AI con Service Account
 
     Uso con Gemini API:
         adapter = GeminiAdapter(api_key="AI...")
 
     Uso con Vertex AI:
-        adapter = GeminiAdapter(project_id="my-project", location="us-central1")
+        adapter = GeminiAdapter(
+            location="us-central1",
+            service_account_file="path/to/key.json"
+        )
     """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        project_id: Optional[str] = None,
         location: Optional[str] = None,
         service_account_file: Optional[str] = None,
         service_account_info: Optional[Dict[str, Any]] = None,
@@ -72,18 +74,16 @@ class GeminiAdapter(BaseAdapter):
 
         Para Vertex AI con Service Account (recomendado):
             GeminiAdapter(
-                project_id="my-project",
                 location="us-central1",
                 service_account_file="path/to/key.json"
             )
 
         Para Vertex AI con Access Token:
-            GeminiAdapter(project_id="...", access_token="ya29...")
+            GeminiAdapter(location="us-central1", access_token="ya29...")
 
         Args:
             api_key: API key de Google AI Studio (para Gemini API)
-            project_id: ID del proyecto GCP (para Vertex AI)
-            location: Región de Vertex AI (default: us-central1)
+            location: Región de Vertex AI (ej: "us-central1")
             service_account_file: Ruta al archivo JSON del service account
             service_account_info: Dict con la información del service account
             access_token: Token de acceso OAuth directo (para Vertex AI)
@@ -97,7 +97,6 @@ class GeminiAdapter(BaseAdapter):
                 raise ValueError("location es requerido para Vertex AI")
             from instantneo.fetchers.vertexai import VertexAIClient
             self.client = VertexAIClient(
-                project_id=project_id or "",
                 location=location,
                 service_account_file=service_account_file,
                 service_account_info=service_account_info,

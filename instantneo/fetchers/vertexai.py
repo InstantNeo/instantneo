@@ -187,14 +187,12 @@ class VertexAIClient:
 
     Ejemplo con Service Account:
         client = VertexAIClient(
-            project_id="my-project",
             location="us-central1",
             service_account_file="path/to/key.json"
         )
 
     Ejemplo con Access Token:
         client = VertexAIClient(
-            project_id="my-project",
             location="us-central1",
             access_token="ya29..."
         )
@@ -205,7 +203,6 @@ class VertexAIClient:
 
     def __init__(
         self,
-        project_id: str,
         location: str,
         service_account_file: Optional[str] = None,
         service_account_info: Optional[Dict[str, Any]] = None,
@@ -216,16 +213,15 @@ class VertexAIClient:
         Inicializa el cliente de Vertex AI.
 
         Args:
-            project_id: ID del proyecto de Google Cloud
             location: Región del endpoint (ej: "us-central1", "europe-west4")
             service_account_file: Ruta al archivo JSON del service account
             service_account_info: Dict con la información del service account
             access_token: Token de acceso directo (alternativa a service account)
             timeout: Timeout en segundos para las requests
         """
-        self.project_id = project_id
         self.location = location
         self.timeout = timeout
+        self.project_id: Optional[str] = None
 
         # Autenticación
         self._access_token = access_token
@@ -238,9 +234,7 @@ class VertexAIClient:
                 service_account_file=service_account_file,
                 service_account_info=service_account_info,
             )
-            # Usar project_id del SA si no se especificó
-            if not project_id and self._sa_info.get("project_id"):
-                self.project_id = self._sa_info["project_id"]
+            self.project_id = self._sa_info.get("project_id")
         elif not access_token:
             raise ValueError(
                 "Debe proporcionar service_account_file, service_account_info, o access_token"
@@ -551,7 +545,6 @@ def fetch_vertexai(
     model: str,
     contents: List[Content],
     location: str,
-    project_id: Optional[str] = None,
     service_account_file: Optional[str] = None,
     service_account_info: Optional[Dict[str, Any]] = None,
     access_token: Optional[str] = None,
@@ -568,7 +561,6 @@ def fetch_vertexai(
     Args:
         model: ID del modelo a usar
         contents: Lista de mensajes de la conversación
-        project_id: ID del proyecto de Google Cloud (puede inferirse del SA)
         location: Región del endpoint
         service_account_file: Ruta al archivo JSON del service account
         service_account_info: Dict con la información del service account
@@ -589,6 +581,7 @@ def fetch_vertexai(
         >>>
         >>> response = fetch_vertexai(
         ...     model="gemini-2.0-flash",
+        ...     location="us-central1",
         ...     service_account_file="path/to/key.json",
         ...     contents=[
         ...         Content(role="user", parts=[Part(text="Hello!")])
@@ -596,20 +589,7 @@ def fetch_vertexai(
         ... )
         >>> print(response.candidates[0].content.parts[0].text)
     """
-    # Determinar project_id
-    actual_project_id = project_id
-    if not actual_project_id and service_account_info:
-        actual_project_id = service_account_info.get("project_id")
-    if not actual_project_id and service_account_file:
-        with open(service_account_file, "r") as f:
-            sa_data = json.load(f)
-            actual_project_id = sa_data.get("project_id")
-
-    if not actual_project_id:
-        raise ValueError("project_id es requerido (o debe estar en el service account)")
-
     client = VertexAIClient(
-        project_id=actual_project_id,
         location=location,
         service_account_file=service_account_file,
         service_account_info=service_account_info,
