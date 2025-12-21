@@ -158,6 +158,7 @@ class ReasoningConfig:
 class StreamOptions:
     """Opciones para respuestas en streaming"""
     include_obfuscation: Optional[bool] = None
+    include_usage: Optional[bool] = None
 
 
 @dataclass

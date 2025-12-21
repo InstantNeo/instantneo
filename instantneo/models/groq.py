@@ -24,13 +24,18 @@ class Message:
 
     Attributes:
         role: Rol del emisor del mensaje (system, user, assistant, tool)
-        content: Contenido textual del mensaje
+        content: Contenido del mensaje. Puede ser un string simple o una lista
+            de content blocks para soportar imágenes (vision).
+            Formato de imagen via URL:
+            [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]
+            Formato de imagen via base64:
+            [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}]
         name: Nombre opcional del participante o funcion
         tool_calls: Lista de llamadas a herramientas (solo para assistant)
         tool_call_id: ID de la llamada a herramienta (solo para role=tool)
     """
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    content: Union[str, List[Dict[str, Any]]]
     name: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
