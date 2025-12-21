@@ -101,6 +101,9 @@ class GroqClient:
         if reasoning_format and include_reasoning:
             raise ValueError("reasoning_format e include_reasoning son mutuamente exclusivos")
 
+        if n is not None and n != 1:
+            raise ValueError("Groq solo soporta n=1")
+
         body: Dict[str, Any] = {
             "messages": [
                 {

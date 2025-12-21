@@ -9,7 +9,7 @@ import httpx
 import json
 
 # Importar modelos de datos desde el módulo separado
-from models.anthropic import (
+from instantneo.models.anthropic import (
     MessageContent,
     Message,
     Tool,
