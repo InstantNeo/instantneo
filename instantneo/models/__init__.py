@@ -5,17 +5,35 @@ Este módulo contiene todos los tipos de datos (dataclasses) para interactuar
 con diferentes APIs de LLM, organizados por proveedor.
 """
 
-# Tipos comunes/base
-from .common import (
-    BaseMessage,
-    BaseContent,
-    BaseToolDefinition,
-    BaseToolCall,
-    BaseUsage,
-    BaseAPIError,
-    BaseResponse,
-    BaseGenerationParams,
+# Tipos estándar (interfaz unificada Core <-> Adapters)
+from .standard import (
+    # Content blocks
+    TextContent,
+    ImageContent,
+    ContentBlock,
+    # Tools
+    StandardTool,
+    StandardToolChoice,
+    StandardToolCall,
+    # Messages
+    StandardMessage,
+    # Request/Response
+    StandardRequest,
+    StandardResponse,
+    StandardChoice,
+    StandardResponseMessage,
+    StandardUsage,
+    # Streaming
+    StandardStreamDelta,
+    StandardStreamChunk,
+    # Factory helpers
+    create_user_message,
+    create_system_message,
+    create_assistant_message,
+    create_tool_result_message,
+    create_tool,
 )
+
 
 # Tipos específicos de Anthropic
 from .anthropic import (
@@ -79,15 +97,26 @@ from .groq import (
 )
 
 __all__ = [
-    # Common types
-    "BaseMessage",
-    "BaseContent",
-    "BaseToolDefinition",
-    "BaseToolCall",
-    "BaseUsage",
-    "BaseAPIError",
-    "BaseResponse",
-    "BaseGenerationParams",
+    # Standard types (interfaz unificada)
+    "TextContent",
+    "ImageContent",
+    "ContentBlock",
+    "StandardTool",
+    "StandardToolChoice",
+    "StandardToolCall",
+    "StandardMessage",
+    "StandardRequest",
+    "StandardResponse",
+    "StandardChoice",
+    "StandardResponseMessage",
+    "StandardUsage",
+    "StandardStreamDelta",
+    "StandardStreamChunk",
+    "create_user_message",
+    "create_system_message",
+    "create_assistant_message",
+    "create_tool_result_message",
+    "create_tool",
 
     # Anthropic types
     "MessageContent",
