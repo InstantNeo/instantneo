@@ -89,6 +89,7 @@ class OpenAIClient:
         self,
         model: Optional[str] = None,
         input: Optional[Union[str, List[Union[InputMessage, Dict[str, Any]]]]] = None,
+        instructions: Optional[str] = None,
         background: Optional[bool] = None,
         conversation: Optional[Union[str, Conversation]] = None,
         include: Optional[List[str]] = None,
@@ -126,6 +127,9 @@ class OpenAIClient:
                     msg.__dict__ if hasattr(msg, '__dict__') else msg
                     for msg in input
                 ]
+
+        if instructions is not None:
+            body["instructions"] = instructions
 
         # Parámetros opcionales
         if background is not None:
@@ -190,6 +194,8 @@ class OpenAIClient:
             stream_opts = {}
             if stream_options.include_obfuscation is not None:
                 stream_opts["include_obfuscation"] = stream_options.include_obfuscation
+            if stream_options.include_usage is not None:
+                stream_opts["include_usage"] = stream_options.include_usage
             if stream_opts:
                 body["stream_options"] = stream_opts
 
@@ -261,10 +267,10 @@ class OpenAIClient:
                         encrypted_content=item.get("encrypted_content")
                     ))
 
-                elif item_type in ["function", "file_search", "web_search_preview", "code_interpreter", "computer_use_preview", "image_generation"]:
+                elif item_type in ["function_call", "function", "file_search", "web_search_preview", "code_interpreter", "computer_use_preview", "image_generation"]:
                     output_items.append(ToolCall(
                         type=item_type,
-                        id=item["id"],
+                        id=item.get("call_id") or item.get("id", ""),
                         name=item.get("name"),
                         arguments=item.get("arguments")
                     ))
@@ -279,8 +285,9 @@ class OpenAIClient:
             usage_data = response_data["usage"]
 
             prompt_details = None
-            if "prompt_tokens_details" in usage_data:
-                ptd = usage_data["prompt_tokens_details"]
+            # OpenAI Responses API usa input_tokens_details (no prompt_tokens_details)
+            ptd = usage_data.get("input_tokens_details") or usage_data.get("prompt_tokens_details")
+            if ptd:
                 prompt_details = UsageDetails(
                     audio_tokens=ptd.get("audio_tokens"),
                     text_tokens=ptd.get("text_tokens"),
@@ -288,76 +295,82 @@ class OpenAIClient:
                 )
 
             completion_details = None
-            if "completion_tokens_details" in usage_data:
-                ctd = usage_data["completion_tokens_details"]
+            # OpenAI Responses API usa output_tokens_details (no completion_tokens_details)
+            ctd = usage_data.get("output_tokens_details") or usage_data.get("completion_tokens_details")
+            if ctd:
                 completion_details = UsageDetails(
                     audio_tokens=ctd.get("audio_tokens"),
                     reasoning_tokens=ctd.get("reasoning_tokens"),
                     text_tokens=ctd.get("text_tokens")
                 )
 
+            # /v1/responses usa input_tokens/output_tokens, pero mapeamos a prompt_tokens/completion_tokens
             usage = Usage(
-                prompt_tokens=usage_data["prompt_tokens"],
-                completion_tokens=usage_data["completion_tokens"],
-                total_tokens=usage_data["total_tokens"],
+                prompt_tokens=usage_data.get("input_tokens", usage_data.get("prompt_tokens", 0)),
+                completion_tokens=usage_data.get("output_tokens", usage_data.get("completion_tokens", 0)),
+                total_tokens=usage_data.get("total_tokens", 0),
                 prompt_tokens_details=prompt_details,
                 completion_tokens_details=completion_details
             )
 
-        # Parsear incomplete_details
+        # Parsear incomplete_details (puede ser null en la respuesta)
         incomplete_details = None
-        if "incomplete_details" in response_data:
+        incomplete_data = response_data.get("incomplete_details")
+        if incomplete_data:
             incomplete_details = IncompleteDetails(
-                reason=response_data["incomplete_details"]["reason"]
+                reason=incomplete_data.get("reason", "unknown")
             )
 
-        # Parsear error
+        # Parsear error (puede ser null en la respuesta)
         error = None
-        if "error" in response_data:
+        error_data = response_data.get("error")
+        if error_data:
             error = ErrorDetails(
-                code=response_data["error"]["code"],
-                message=response_data["error"]["message"]
+                code=error_data.get("code", "unknown"),
+                message=error_data.get("message", "Unknown error")
             )
 
-        # Parsear conversation
+        # Parsear conversation (puede ser null)
         conversation = None
-        if "conversation" in response_data and response_data["conversation"]:
-            conversation = Conversation(id=response_data["conversation"]["id"])
+        conv_data = response_data.get("conversation")
+        if conv_data and isinstance(conv_data, dict):
+            conversation = Conversation(id=conv_data.get("id", ""))
 
-        # Parsear prompt
+        # Parsear prompt (puede ser null)
         prompt = None
-        if "prompt" in response_data and response_data["prompt"]:
-            prompt_data = response_data["prompt"]
+        prompt_data = response_data.get("prompt")
+        if prompt_data and isinstance(prompt_data, dict):
             prompt = PromptReference(
-                id=prompt_data["id"],
+                id=prompt_data.get("id", ""),
                 variables=prompt_data.get("variables"),
                 version=prompt_data.get("version")
             )
 
-        # Parsear reasoning config
+        # Parsear reasoning config (puede ser null o tener valores null)
         reasoning_config = None
-        if "reasoning" in response_data and response_data["reasoning"]:
+        reasoning_data = response_data.get("reasoning")
+        if reasoning_data and isinstance(reasoning_data, dict):
             reasoning_config = ReasoningConfig(
-                effort=response_data["reasoning"].get("effort"),
-                summary=response_data["reasoning"].get("summary")
+                effort=reasoning_data.get("effort"),
+                summary=reasoning_data.get("summary")
             )
 
-        # Parsear text config
+        # Parsear text config (puede ser null)
         text_config = None
-        if "text" in response_data and response_data["text"]:
-            text_data = response_data["text"]
+        text_data = response_data.get("text")
+        if text_data and isinstance(text_data, dict):
             text_format = None
 
-            if "format" in text_data:
-                fmt = text_data["format"]
+            fmt = text_data.get("format")
+            if fmt and isinstance(fmt, dict):
                 fmt_type = fmt.get("type")
 
                 if fmt_type == "text":
                     text_format = TextFormat()
                 elif fmt_type == "json_schema":
                     text_format = JsonSchemaFormat(
-                        name=fmt["name"],
-                        schema=fmt["schema"],
+                        name=fmt.get("name", ""),
+                        schema=fmt.get("schema", {}),
                         description=fmt.get("description"),
                         strict=fmt.get("strict", False)
                     )
@@ -406,6 +419,7 @@ class OpenAIClient:
         self,
         model: Optional[str] = None,
         input: Optional[Union[str, List[Union[InputMessage, Dict[str, Any]]]]] = None,
+        instructions: Optional[str] = None,
         background: Optional[bool] = None,
         conversation: Optional[Union[str, Conversation]] = None,
         include: Optional[List[str]] = None,
@@ -433,6 +447,7 @@ class OpenAIClient:
         Args:
             model: ID del modelo (ej: "gpt-4o", "o3")
             input: Entrada de texto simple o lista de mensajes
+            instructions: Instrucciones del sistema (equivalente a system message)
             background: Si ejecutar la respuesta en segundo plano
             conversation: Conversación a la que pertenece esta respuesta
             include: Datos adicionales a incluir en la respuesta
@@ -466,6 +481,7 @@ class OpenAIClient:
         body = self._build_request_body(
             model=model,
             input=input,
+            instructions=instructions,
             background=background,
             conversation=conversation,
             include=include,
@@ -516,6 +532,7 @@ class OpenAIClient:
         self,
         model: Optional[str] = None,
         input: Optional[Union[str, List[Union[InputMessage, Dict[str, Any]]]]] = None,
+        instructions: Optional[str] = None,
         background: Optional[bool] = None,
         conversation: Optional[Union[str, Conversation]] = None,
         include: Optional[List[str]] = None,
@@ -542,6 +559,7 @@ class OpenAIClient:
         Args:
             model: ID del modelo
             input: Entrada de texto simple o lista de mensajes
+            instructions: Instrucciones del sistema (equivalente a system message)
             background: Si ejecutar la respuesta en segundo plano
             conversation: Conversación a la que pertenece esta respuesta
             include: Datos adicionales a incluir en la respuesta
@@ -570,6 +588,7 @@ class OpenAIClient:
         body = self._build_request_body(
             model=model,
             input=input,
+            instructions=instructions,
             background=background,
             conversation=conversation,
             include=include,
@@ -615,6 +634,7 @@ def fetch_openai(
     api_key: str,
     model: Optional[str] = None,
     input: Optional[Union[str, List[Union[InputMessage, Dict[str, Any]]]]] = None,
+    instructions: Optional[str] = None,
     stream: bool = False,
     background: Optional[bool] = None,
     conversation: Optional[Union[str, Conversation]] = None,
@@ -643,6 +663,7 @@ def fetch_openai(
         api_key: API key de OpenAI
         model: ID del modelo a usar (ej: "gpt-4o", "o3")
         input: Entrada de texto simple o lista de mensajes
+        instructions: Instrucciones del sistema (equivalente a system message)
         stream: Si usar streaming o no
         background: Si ejecutar la respuesta en segundo plano
         conversation: Conversación a la que pertenece esta respuesta
@@ -697,6 +718,7 @@ def fetch_openai(
         return client.create_completion_stream(
             model=model,
             input=input,
+            instructions=instructions,
             background=background,
             conversation=conversation,
             include=include,
@@ -721,6 +743,7 @@ def fetch_openai(
         return client.create_completion(
             model=model,
             input=input,
+            instructions=instructions,
             background=background,
             conversation=conversation,
             include=include,
