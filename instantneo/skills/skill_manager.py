@@ -47,10 +47,21 @@ class SkillManager:
         get_skill_metadata_by_name(name): Get metadata for a skill by name.
         get_skills_by_tag(tag, return_keys=False): Get skills with a specific tag.
     """
-    def __init__(self):
+    def __init__(
+        self, 
+        name: Optional[str] = None,                 # Nombre opcional
+        description: Optional[str] = None,          # Descripción opcional
+        skills: Optional[List[Callable]] = None,    # Carga skills directamente desde una lista
+        skills_from_files: Optional[List[str]] = None,           # Carga skills desde archivos .py
+        skills_from_folders: Optional[List[str]] = None,         # Carga skills desde carpetas
+        global_instructions: str = ""          # Instrucciones globales del skill manager, que aplican para todas las skills
+    ):
         # Almacenamos el módulo del contexto en el que se instanció el manager
         caller_frame = inspect.currentframe().f_back
         self.instantiation_module = inspect.getmodule(caller_frame)
+
+        self.name = name
+        self.description = description
 
         self.registry: Dict[str, Any] = {}
         self.registry_by_name: Dict[str, List[Any]] = {}
@@ -58,6 +69,33 @@ class SkillManager:
         # Se instancia la clase auxiliar para carga de skills.
         self.load_skills = SkillLoader(self)
 
+        # Atributo de Instrucciones Globales
+        self.global_instructions: str = global_instructions
+
+        # Carga Inicial Declarativa de skills
+        if skills:
+            for func in skills:
+                self.register_skill(func)
+        
+        if skills_from_files:
+            for file_path in skills_from_files:
+                self.load_skills.from_file(file_path)
+                
+        if skills_from_folders:
+            for folder_path in skills_from_folders:
+                self.load_skills.from_folder(folder_path)
+        
+        # Métodos de interfaz para setear y obtener instrucciones globales del SkillManager
+
+    def set_global_instructions(self, text: str) -> None:
+        """Establece las instrucciones globales para el uso de las skills de este manager."""
+        if not isinstance(text, str):
+            raise TypeError("Las instrucciones deben ser texto (str).")
+        self.global_instructions = text
+
+    def get_global_instructions(self) -> str:
+        """Devuelve las instrucciones globales de las skills."""
+        return self.global_instructions
 
     def register_skill(self, func) -> None:
         
