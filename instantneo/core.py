@@ -26,11 +26,14 @@ class BaseParams:
 class InstantNeoParams(BaseParams):
     """Parameters for initializing an InstantNeo instance."""
     provider: str
-    api_key: str
+    api_key: Optional[str] = None
     role_setup: str
     skills: Optional[Union[List[str], SkillManager]] = None
     images: Optional[Union[str, List[str]]] = None
     image_detail: str = "auto"
+    # Vertex AI specific parameters
+    location: Optional[str] = None
+    service_account_file: Optional[str] = None
 
 
 @dataclass
@@ -130,16 +133,19 @@ class InstantNeo:
     Main class to instantiate an agent with InstantNeo.
 
     InstantNeo facilitates interaction with various Large Language Model (LLM) providers,
-    such as OpenAI, Anthropic, and Groq, by providing a unified interface. It supports
-    text generation, function calling (skills), and image processing, making it versatile
-    for a wide range of applications.
+    such as OpenAI, Anthropic, Groq, Gemini, and Vertex AI, by providing a unified interface.
+    It supports text generation, function calling (skills), and image processing, making it
+    versatile for a wide range of applications.
 
     Args:
         provider (str): The LLM provider to use. Supported providers are:
             - "openai": OpenAI's models.
             - "anthropic": Anthropic's models.
             - "groq": Groq's models.
+            - "gemini": Google Gemini API (requires api_key).
+            - "vertexai": Google Vertex AI (requires service_account_file and location).
         api_key (str): API key for accessing the specified provider.
+            Required for: openai, anthropic, groq, gemini.
         model (str): The name of the language model to use.
         role_setup (str): Initial role setup or system prompt for the agent.
         skills (Optional[Union[List[str], SkillManager]], optional): Skills to be registered
@@ -162,6 +168,10 @@ class InstantNeo:
         stream (bool, optional): Enable streaming of the response. Defaults to False.
         images (Optional[Union[str, List[str]]], optional): Paths or URLs to images to be included
             in the context. Supported by providers that handle multimodal inputs. Defaults to None.
+        location (Optional[str], optional): Vertex AI region (e.g., "us-central1").
+            Required for provider="vertexai".
+        service_account_file (Optional[str], optional): Path to Google service account JSON file.
+            Required for provider="vertexai".
     """
     WAIT_RESPONSE = "wait_response"
     EXECUTION_ONLY = "execution_only"
@@ -170,9 +180,9 @@ class InstantNeo:
     def __init__(
         self,
         provider: str,
-        api_key: str,
         model: str,
         role_setup: str,
+        api_key: Optional[str] = None,
         skills: Optional[Union[List[str], SkillManager]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = 200,
@@ -184,6 +194,9 @@ class InstantNeo:
         stream: bool = False,
         images: Optional[Union[str, List[str]]] = None,
         image_detail: str = "auto",
+        # Vertex AI specific parameters
+        location: Optional[str] = None,
+        service_account_file: Optional[str] = None,
     ):
         """Initialize an InstantNeo instance."""
         self.config = InstantNeoParams(
@@ -202,6 +215,8 @@ class InstantNeo:
             stream=stream,
             images=images,
             image_detail=image_detail,
+            location=location,
+            service_account_file=service_account_file,
         )
 
         # print(f"Tipo de 'self.config.skills': {type(self.config.skills)}")
@@ -833,6 +848,8 @@ Args:
             "openai": ("instantneo.adapters.openai_adapter", "OpenAIAdapter"),
             "anthropic": ("instantneo.adapters.anthropic_adapter", "AnthropicAdapter"),
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
+            "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
+            "vertexai": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
         }
 
         if self.config.provider not in adapter_map:
@@ -842,4 +859,18 @@ Args:
         module = __import__(module_path, fromlist=[class_name])
         adapter_class = getattr(module, class_name)
 
-        return adapter_class(self.config.api_key)
+        # Handle different authentication methods
+        if self.config.provider == "vertexai":
+            if not self.config.service_account_file:
+                raise ValueError("service_account_file is required for Vertex AI provider")
+            if not self.config.location:
+                raise ValueError("location is required for Vertex AI provider")
+            return adapter_class(
+                location=self.config.location,
+                service_account_file=self.config.service_account_file,
+            )
+        else:
+            # openai, anthropic, groq, gemini - todos usan api_key
+            if not self.config.api_key:
+                raise ValueError(f"api_key is required for {self.config.provider} provider")
+            return adapter_class(api_key=self.config.api_key)

@@ -28,23 +28,12 @@ InstantNeo is a Python library that lets you create LLM-based agents quickly and
 - **Customizable Agent Settings:** Modify agent behavior on-the-fly by overriding temperature, max tokens, role setup, and other parameters for specific interactions without recreating the entire agent.
 
 ## Installation
-InstantNeo requires specifying which providers will be installed. You can use [all] to install dependencies for all supported providers:
 
 ```bash
-pip install instantneo[all]
+pip install instantneo
 ```
 
-```bash
-pip install instantneo[openai]
-```
-
-```bash
-pip install instantneo[groq]
-```
-
-```bash
-pip install instantneo[anthropic]
-```
+That's it. Works with OpenAI, Anthropic, Groq, Gemini, and Vertex AI out of the box.
 
 ## Quickstart
 
@@ -54,8 +43,8 @@ pip install instantneo[anthropic]
 from instantneo import InstantNeo
 
 neo = InstantNeo(
-    provider="openai", 
-    api_key="your-api-key", 
+    provider="openai",
+    api_key="your-api-key",
     model="gpt-4o",
     role_setup="You are Neo, the chosen one. Ready to learn anything."
 )
@@ -82,6 +71,22 @@ neo = InstantNeo(
 )
 
 print(neo.run("Three agents ahead. What move?"))
+```
+
+### Use Vertex AI
+
+```python
+from instantneo import InstantNeo
+
+neo = InstantNeo(
+    provider="vertexai",
+    model="gemini-2.5-flash",
+    role_setup="You are Neo, the chosen one.",
+    location="us-central1",
+    service_account_file="path/to/service-account.json"
+)
+
+print(neo.run("I need an exit."))
 ```
 
 ## API Reference

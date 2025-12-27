@@ -1,185 +1,406 @@
-import json  # Import json module
-from anthropic import Anthropic
-from typing import Dict, Any, Generator
+"""
+Adapter para Anthropic Claude API.
+
+Traduce entre el formato estándar de InstantNeo y el formato de Anthropic,
+utilizando el fetcher HTTP puro en lugar del SDK.
+
+Diferencias clave de Anthropic:
+- El mensaje system es un parámetro separado (no va en messages)
+- max_tokens es REQUERIDO
+- Las tools usan input_schema en lugar de parameters
+- tool_choice usa formato objeto {type: "auto"|"any"|"tool"|"none"}
+- La respuesta tiene content[] en lugar de choices[]
+"""
+
+from typing import Iterator, Dict, Any, List, Optional
+import json
+
 from instantneo.adapters.base_adapter import BaseAdapter
+from instantneo.models.standard import (
+    StandardRequest,
+    StandardResponse,
+    StandardChoice,
+    StandardResponseMessage,
+    StandardUsage,
+    StandardToolCall,
+    StandardStreamChunk,
+    StandardStreamDelta,
+)
+from instantneo.fetchers.anthropic import (
+    AnthropicClient,
+    Message as AnthropicMessage,
+    Tool as AnthropicTool,
+)
 
-from types import SimpleNamespace  # Import SimpleNamespace
-
-class ToolCall:
-    def __init__(self, name, arguments):
-        self.type = 'function'  # Necesario para InstantNeo
-        # JSON-encode the arguments dictionary
-        arguments_json = json.dumps(arguments)
-        # Use SimpleNamespace to create an object with attributes
-        self.function = SimpleNamespace(name=name, arguments=arguments_json)
-
-    def __repr__(self):
-        return f"ToolCall(type={self.type}, function={self.function})"
-
-class Response:
-    def __init__(self, choices, usage=None):
-        self.choices = choices
-        self.usage = usage  # Nuevo atributo para almacenar información de uso
-
-    def __repr__(self):
-        return f"Response(choices={self.choices}, usage={self.usage})"
-
-class Choice:
-    def __init__(self, message, finish_reason=None):
-        self.message = message
-        self.finish_reason = finish_reason
-
-    def __repr__(self):
-        return f"Choice(message={self.message}, finish_reason={self.finish_reason})"
-
-class Message:
-    def __init__(self, content='', function_call=None, tool_calls=None):
-        self.content = content
-        self.function_call = function_call
-        self.tool_calls = tool_calls or []
-
-    def __repr__(self):
-        return f"Message(content={self.content}, function_call={self.function_call}, tool_calls={self.tool_calls})"
 
 class AnthropicAdapter(BaseAdapter):
+    """
+    Adapter para Anthropic Claude API.
+
+    Anthropic tiene un formato diferente a OpenAI:
+    - system es parámetro de nivel superior, no un mensaje
+    - max_tokens es obligatorio
+    - tools usan input_schema en lugar de parameters
+    - tool_choice es objeto, no string
+    - response.content[] en lugar de response.choices[]
+    """
+
+    # Valor por defecto para max_tokens si no se especifica
+    DEFAULT_MAX_TOKENS = 4096
+
     def __init__(self, api_key: str):
-        self.client = Anthropic(api_key=api_key)
+        """
+        Inicializa el adapter con el cliente HTTP.
 
-    def create_chat_completion(self, **kwargs) -> Response:
-        cleaned_kwargs = self._clean_kwargs(kwargs)
-        # print("Parámetros limpiados:", cleaned_kwargs)
+        Args:
+            api_key: API key de Anthropic
+        """
+        self.client = AnthropicClient(api_key=api_key)
 
+    def complete(self, request: StandardRequest) -> StandardResponse:
+        """
+        Ejecuta una completion usando Anthropic API.
+
+        Args:
+            request: Petición en formato estándar
+
+        Returns:
+            StandardResponse con la respuesta del modelo
+        """
         try:
-            response = self.client.messages.create(**cleaned_kwargs )
-            # Convertir la respuesta al formato que InstantNeo espera
-            assistant_choice = self._convert_response_to_instantneo_format(response)
-            
-            # Intentar obtener la información de uso
-            usage = getattr(response, 'usage', None)
-            if usage is None:
-                # Si no existe 'usage', revisar si está en 'metadata' o en otro lugar
-                usage = getattr(response, 'metadata', {}).get('usage', None)
+            # Extraer system message y mensajes normales
+            system_content, anthropic_messages = self._extract_system_and_messages(request.messages)
 
-            # Crear y retornar el objeto Response con la información de uso
-            return Response(choices=[assistant_choice], usage=usage)
+            # Traducir tools
+            anthropic_tools = self._translate_tools(request.tools) if request.tools else None
+            anthropic_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
+
+            # max_tokens es requerido en Anthropic
+            max_tokens = request.max_tokens or self.DEFAULT_MAX_TOKENS
+
+            # Llamar al fetcher
+            response = self.client.create_message(
+                model=request.model,
+                messages=anthropic_messages,
+                max_tokens=max_tokens,
+                system=system_content,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                stop_sequences=request.stop,
+                tools=anthropic_tools,
+                tool_choice=anthropic_tool_choice,
+                stream=False,
+                **request.provider_params,
+            )
+
+            # Traducir respuesta Anthropic → formato estándar
+            return self._translate_response(response)
+
         except Exception as e:
-            raise RuntimeError(f"Error en la API de Anthropic: {str(e)}")
+            raise RuntimeError(f"Error en Anthropic API: {str(e)}")
 
-    def create_streaming_chat_completion(self, **kwargs) -> Generator[str, None, None]:
-        cleaned_kwargs = self._clean_kwargs(kwargs)
+    def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
+        """
+        Ejecuta una completion con streaming usando Anthropic API.
 
+        Args:
+            request: Petición en formato estándar
+
+        Yields:
+            StandardStreamChunk con fragmentos de la respuesta
+        """
         try:
-            with self.client.messages.stream(**cleaned_kwargs) as stream:
-                for text in stream.text_stream:
-                    yield text
+            # Extraer system message y mensajes normales
+            system_content, anthropic_messages = self._extract_system_and_messages(request.messages)
+
+            # Traducir tools
+            anthropic_tools = self._translate_tools(request.tools) if request.tools else None
+            anthropic_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
+
+            # max_tokens es requerido en Anthropic
+            max_tokens = request.max_tokens or self.DEFAULT_MAX_TOKENS
+
+            # Llamar al fetcher con streaming
+            stream = self.client.create_message_stream(
+                model=request.model,
+                messages=anthropic_messages,
+                max_tokens=max_tokens,
+                system=system_content,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                stop_sequences=request.stop,
+                tools=anthropic_tools,
+                tool_choice=anthropic_tool_choice,
+                **request.provider_params,
+            )
+
+            # Traducir chunks
+            for chunk in stream:
+                translated = self._translate_stream_chunk(chunk)
+                if translated:
+                    yield translated
+
         except Exception as e:
-            raise RuntimeError(f"Error in Anthropic API: {str(e)}")
+            raise RuntimeError(f"Error en Anthropic API streaming: {str(e)}")
 
     def supports_images(self) -> bool:
-        return True  # Anthropic supports images starting from Claude 3 models
+        """Anthropic soporta imágenes desde Claude 3."""
+        return True
 
-    def _convert_response_to_instantneo_format(self, response) -> Choice:
-        # print("response: ",response)
-        message_content = ''
-        function_call = None
+    # =========================================================================
+    # MÉTODOS DE TRADUCCIÓN: StandardRequest → Anthropic
+    # =========================================================================
+
+    def _extract_system_and_messages(self, messages: List) -> tuple:
+        """
+        Extrae el system message y convierte el resto al formato Anthropic.
+
+        Anthropic requiere que system sea un parámetro separado, no un mensaje.
+
+        Returns:
+            Tuple de (system_content, list_of_messages)
+        """
+        system_content = None
+        anthropic_messages = []
+
+        for msg in messages:
+            if msg.role == "system":
+                # Acumular contenido de sistema
+                if system_content is None:
+                    system_content = msg.content if isinstance(msg.content, str) else ""
+                else:
+                    system_content += "\n" + (msg.content if isinstance(msg.content, str) else "")
+            else:
+                # Convertir mensaje normal
+                content = msg.content
+                if isinstance(content, list):
+                    content = self._translate_content_blocks(content)
+                elif msg.role == "tool":
+                    # Anthropic usa tool_result como content block en mensajes user
+                    content = [{
+                        "type": "tool_result",
+                        "tool_use_id": msg.tool_call_id,
+                        "content": content if isinstance(content, str) else str(content),
+                    }]
+
+                anthropic_msg = AnthropicMessage(
+                    role="user" if msg.role == "tool" else msg.role,
+                    content=content,
+                )
+                anthropic_messages.append(anthropic_msg)
+
+        return system_content, anthropic_messages
+
+    def _translate_content_blocks(self, blocks: List) -> List[Dict[str, Any]]:
+        """Traduce content blocks al formato Anthropic."""
+        result = []
+
+        for block in blocks:
+            if hasattr(block, 'type'):
+                # Formato estándar con objetos
+                if block.type == "text":
+                    result.append({
+                        "type": "text",
+                        "text": block.text,
+                    })
+                elif block.type == "image":
+                    if block.base64 and block.media_type:
+                        result.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": block.media_type,
+                                "data": block.base64,
+                            }
+                        })
+                    elif block.url:
+                        result.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": block.url,
+                            }
+                        })
+
+            elif isinstance(block, dict):
+                block_type = block.get("type", "")
+
+                if block_type == "text":
+                    result.append({
+                        "type": "text",
+                        "text": block.get("text", ""),
+                    })
+                elif block_type == "image_url":
+                    # Formato legacy de OpenAI Chat Completions
+                    image_data = block.get("image_url", {})
+                    url = image_data.get("url", "") if isinstance(image_data, dict) else image_data
+
+                    # Detectar si es base64 o URL
+                    if url.startswith("data:"):
+                        # Es base64: data:image/jpeg;base64,xxxx
+                        parts = url.split(";base64,")
+                        if len(parts) == 2:
+                            media_type = parts[0].replace("data:", "")
+                            base64_data = parts[1]
+                            result.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": base64_data,
+                                }
+                            })
+                    else:
+                        # Es URL directa
+                        result.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": url,
+                            }
+                        })
+                elif block_type == "image":
+                    # Ya está en formato Anthropic
+                    result.append(block)
+                else:
+                    # Pasar directo otros formatos
+                    result.append(block)
+
+        return result
+
+    def _translate_tools(self, tools: List) -> List[AnthropicTool]:
+        """Traduce herramientas estándar al formato Anthropic."""
+        return [
+            AnthropicTool(
+                name=tool.name,
+                description=tool.description,
+                input_schema=tool.parameters,  # Anthropic usa input_schema
+            )
+            for tool in tools
+        ]
+
+    def _translate_tool_choice(self, tool_choice) -> Dict[str, Any]:
+        """Traduce tool_choice estándar al formato Anthropic."""
+        if tool_choice.type == "auto":
+            return {"type": "auto"}
+        elif tool_choice.type == "none":
+            return {"type": "none"}
+        elif tool_choice.type == "required":
+            return {"type": "any"}  # Anthropic usa "any" para required
+        elif tool_choice.type == "specific" and tool_choice.name:
+            return {"type": "tool", "name": tool_choice.name}
+        return {"type": "auto"}
+
+    # =========================================================================
+    # MÉTODOS DE TRADUCCIÓN: Anthropic → StandardResponse
+    # =========================================================================
+
+    def _translate_response(self, response) -> StandardResponse:
+        """Traduce respuesta Anthropic al formato estándar."""
+        # Extraer contenido de texto y tool_calls
+        text_content = ""
         tool_calls = []
 
         for block in response.content:
-            if block.type == 'text':
-                message_content += block.text
-            elif block.type == 'tool_use':
-                # Create a ToolCall instance with the expected structure
-                function_call = ToolCall(name=block.name, arguments=block.input)
-                tool_calls.append(function_call)
+            if block.type == "text":
+                text_content += block.text or ""
+            elif block.type == "tool_use":
+                # Convertir tool_use a StandardToolCall
+                tool_calls.append(StandardToolCall(
+                    id=block.id,
+                    name=block.name,
+                    arguments=json.dumps(block.input) if isinstance(block.input, dict) else str(block.input),
+                ))
 
-        # Create a Message instance
-        message = Message(
-            content=message_content if message_content else None,
-            function_call=function_call,
-            tool_calls=tool_calls
+        # Construir mensaje de respuesta
+        response_message = StandardResponseMessage(
+            content=text_content if text_content else None,
+            tool_calls=tool_calls if tool_calls else None,
         )
 
-        # Create and return a Choice instance
-        return Choice(
-            message=message,
-            finish_reason=response.stop_reason
+        # Construir choice estándar (Anthropic no tiene choices, simulamos uno)
+        standard_choice = StandardChoice(
+            message=response_message,
+            finish_reason=self._translate_stop_reason(response.stop_reason),
+            index=0,
         )
 
-    def _clean_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        cleaned_kwargs = {k: v for k, v in kwargs.items() if v is not None}
-        
-        # Remover 'stream' de los kwargs si está presente
-        cleaned_kwargs.pop('stream', None)
+        return StandardResponse(
+            id=response.id,
+            model=response.model,
+            choices=[standard_choice],
+            usage=StandardUsage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            ),
+            finish_reason=self._translate_stop_reason(response.stop_reason),
+            raw_response=response,
+        )
 
-        # Manejar el parámetro 'system'
-        system = cleaned_kwargs.pop('system', None)
-        if system:
-            if isinstance(system, list):
-                system = ''.join(system)
-            elif not isinstance(system, str):
-                raise ValueError("El parámetro 'system' debe ser una cadena o una lista de caracteres")
-            cleaned_kwargs['system'] = system
+    def _translate_stop_reason(self, stop_reason: Optional[str]) -> str:
+        """Traduce stop_reason de Anthropic al formato estándar."""
+        mapping = {
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "stop_sequence": "stop",
+            "tool_use": "tool_calls",
+        }
+        return mapping.get(stop_reason, stop_reason or "unknown")
 
-        # Manejar el parámetro 'messages'
-        if 'messages' in cleaned_kwargs:
-            new_messages = []
-            for message in cleaned_kwargs['messages']:
-                if message['role'] == 'system':
-                    # Mover el contenido del mensaje 'system' al parámetro 'system' de nivel superior
-                    if 'system' not in cleaned_kwargs:
-                        cleaned_kwargs['system'] = message['content']
-                    else:
-                        cleaned_kwargs['system'] += "\n" + message['content']
-                else:
-                    content = message['content']
-                    if isinstance(content, list):
-                        # Si el contenido es una lista, convertirlo a una cadena
-                        content = ' '.join(str(item) for item in content)
-                    elif isinstance(content, dict):
-                        # Si el contenido es un diccionario, dejarlo como está
-                        pass
-                    else:
-                        # Si es una cadena u otro tipo, convertirlo a cadena
-                        content = str(content)
-                    
-                    new_messages.append({**message, 'content': content})
-            
-            cleaned_kwargs['messages'] = new_messages
+    def _translate_stream_chunk(self, chunk: Dict[str, Any]) -> Optional[StandardStreamChunk]:
+        """Traduce un chunk de streaming Anthropic al formato estándar."""
+        event_type = chunk.get("type", "")
+        delta = StandardStreamDelta()
 
-        # Manejar el parámetro 'tools'
-        if 'tools' in cleaned_kwargs:
-            tools = cleaned_kwargs['tools']
-            cleaned_tools = []
-            for tool in tools:
-                if 'function' in tool:
-                    function = tool['function']
-                    name = function.get('name')
-                    description = function.get('description')
-                    input_schema = function.get('parameters')
-                else:
-                    name = tool.get('name')
-                    description = tool.get('description')
-                    input_schema = tool.get('parameters')
+        # Procesar diferentes tipos de eventos de Anthropic
+        if event_type == "content_block_delta":
+            delta_data = chunk.get("delta", {})
+            if delta_data.get("type") == "text_delta":
+                delta.content = delta_data.get("text")
+            elif delta_data.get("type") == "input_json_delta":
+                # Tool call arguments
+                delta.tool_calls = [{"partial_json": delta_data.get("partial_json")}]
 
-                if name and input_schema:
-                    cleaned_tool = {
-                        'name': name,
-                        'description': description or '',
-                        'input_schema': input_schema
-                    }
-                    cleaned_tools.append(cleaned_tool)
-                else:
-                    raise ValueError("Cada herramienta debe tener 'name' y 'parameters'/'input_schema'.")
+        elif event_type == "message_delta":
+            delta_data = chunk.get("delta", {})
+            delta.finish_reason = self._translate_stop_reason(delta_data.get("stop_reason"))
 
-            cleaned_kwargs['tools'] = cleaned_tools
+        elif event_type == "message_start":
+            # Mensaje inicial, extraer info del mensaje
+            message = chunk.get("message", {})
+            return StandardStreamChunk(
+                id=message.get("id", ""),
+                model=message.get("model", ""),
+                delta=delta,
+                usage=None,
+            )
 
-        # Manejar el parámetro 'stop'
-        if 'stop' in cleaned_kwargs:
-            stop = cleaned_kwargs.pop('stop')
-            if stop is not None:
-                if isinstance(stop, str):
-                    cleaned_kwargs['stop_sequences'] = [stop]
-                elif isinstance(stop, list):
-                    cleaned_kwargs['stop_sequences'] = stop
+        elif event_type == "message_stop":
+            # Mensaje final
+            delta.finish_reason = "stop"
 
-        return cleaned_kwargs
+        elif event_type in ("ping", "content_block_start", "content_block_stop"):
+            # Eventos que podemos ignorar o no necesitan traducción especial
+            return None
+
+        # Extraer usage si está presente
+        usage = None
+        if "usage" in chunk:
+            usage_data = chunk["usage"]
+            usage = StandardUsage(
+                input_tokens=usage_data.get("input_tokens", 0),
+                output_tokens=usage_data.get("output_tokens", 0),
+                total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+            )
+
+        # Si no hay contenido relevante, retornar None
+        if delta.content is None and delta.tool_calls is None and delta.finish_reason is None:
+            return None
+
+        return StandardStreamChunk(
+            id=chunk.get("id", "") or chunk.get("message", {}).get("id", ""),
+            model=chunk.get("model", "") or chunk.get("message", {}).get("model", ""),
+            delta=delta,
+            usage=usage,
+        )
