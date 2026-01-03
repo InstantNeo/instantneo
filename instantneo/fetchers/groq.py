@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Union, Literal, Iterator
 import httpx
 import json
 
-from models.groq import (
+from instantneo.models.groq import (
     Message,
     Tool,
     ToolFunction,
