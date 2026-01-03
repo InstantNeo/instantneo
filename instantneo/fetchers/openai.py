@@ -9,7 +9,7 @@ import httpx
 import json
 
 # Importar todos los modelos de datos
-from models.openai import (
+from instantneo.models.openai import (
     # Request models - Input content
     InputText,
     InputImage,
