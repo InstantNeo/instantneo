@@ -181,6 +181,7 @@ class InstantNeo:
     def __init__(
         self,
         provider: str,
+        api_key: Optional[str],
         model: str,
         role_setup: str,
         skills: Optional[Union[List[str], SkillManager, List[SkillManager]]] = None,
@@ -266,6 +267,7 @@ class InstantNeo:
         self.adapter = self._create_adapter()
         self.tool_calls = []  # For accumulating tool calls in streaming
         self.async_execution = False  # Default value, will be set in run method
+        self._ephemeral_skills = {}  # Temporary storage for ephemeral skills during run
 
     ##################################
     #         PUBLIC METHODS         #
@@ -446,6 +448,7 @@ a dictionary with common and unique skills. It does not modify the internal skil
         async_execution: bool = False,
         return_full_response: bool = False,
         skills: Optional[List[str]] = None,
+        context: Optional[List[str]] = None,
         images: Optional[Union[str, List[str]]] = None,
         image_detail: Optional[str] = None,
         stream: bool = False,
@@ -462,6 +465,8 @@ Args:
     async_execution (bool, optional): Asynchronous skill execution. Defaults to False.
     return_full_response (bool, optional): Returns the provider's full response. Defaults to False.
     skills (List[str], optional): The skills to use in this run; if not provided, the instance's configured skills are used.
+    context (List[str], optional): Ephemeral context from shelf items. These items' instructions
+        and tools are included ONLY for this run. Use for on-demand knowledge injection.
     images (Optional[Union[str, List[str]]], optional): Images to use in this run.
     image_detail (Optional[str], optional): Detail of the images to use in this run.
     stream (bool, optional): Enable response streaming.
@@ -527,16 +532,59 @@ Args:
         active_skills = self._get_active_skills(skills_to_use)
         #print(f"Active skills for this run: {list(active_skills.keys())}")
 
+        # ═══════════════════════════════════════════════════════
+        # SHELF CONTEXT: Persistente + Efímero
+        # ═══════════════════════════════════════════════════════
+
+        # 1. Contexto persistente (items activados en el shelf)
+        shelf_context = ""
+        if hasattr(self.skill_manager, 'get_active_context'):
+            shelf_context = self.skill_manager.get_active_context()
+
+        # 2. Contexto efímero (items pasados en context=[...])
+        ephemeral_context = ""
+        ephemeral_skills = {}
+
+        if context and hasattr(self.skill_manager, 'get_item_context'):
+            for item_name in context:
+                # Obtener contexto del item
+                item_ctx = self.skill_manager.get_item_context(item_name)
+                if item_ctx:
+                    ephemeral_context += f"\n\n{item_ctx}"
+
+                # Obtener skills del item
+                if hasattr(self.skill_manager, 'get_item_skills'):
+                    item_skills = self.skill_manager.get_item_skills(item_name)
+                    ephemeral_skills.update(item_skills)
+
+        # 3. Combinar contextos
+        combined_context = ""
+        if shelf_context or ephemeral_context:
+            combined_context = shelf_context + ephemeral_context
+
+        # 4. Agregar skills efímeros a active_skills y guardar referencia
+        if ephemeral_skills:
+            active_skills.update(ephemeral_skills)
+            self._ephemeral_skills = ephemeral_skills  # Para que _execute_skill los encuentre
+        else:
+            self._ephemeral_skills = {}  # Limpiar de runs anteriores
+
         image_config = self._get_image_config(run_params)
 
-        messages = self._prepare_messages(run_params.prompt, image_config)
+        messages = self._prepare_messages(run_params.prompt, image_config, combined_context)
 
         adapter_params = AdapterParams.from_run_params(run_params, messages)
 
         if active_skills:
             formatted_tools = []
-            for name, skill in active_skills.items():
+            for name, skill_func in active_skills.items():
+                # Primero intentar obtener del registry (skills persistentes)
                 skill_info = self.get_skill_metadata_by_name(name)
+
+                # Si no está en registry, obtener directamente del skill (efímeros)
+                if skill_info is None and hasattr(skill_func, 'skill_metadata'):
+                    skill_info = skill_func.skill_metadata
+
                 if skill_info and 'parameters' in skill_info:
                     formatted_tools.append(format_tool(skill_info))
                 else:
@@ -593,12 +641,36 @@ Args:
                 f"El proveedor actual no soporta el procesamiento de imágenes")
         return process_images(image_config.images, image_config.image_detail)
 
-    def _prepare_messages(self, prompt: str, image_config: Optional[ImageConfig] = None) -> List[Dict[str, Any]]:
-        """Prepare messages for the language model."""
+    def _prepare_messages(
+        self,
+        prompt: str,
+        image_config: Optional[ImageConfig] = None,
+        shelf_context: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Prepare messages for the language model.
+
+        Args:
+            prompt: The user prompt
+            image_config: Optional image configuration
+            shelf_context: Optional context from shelf (persistent + ephemeral)
+        """
         messages = []
         final_role_setup = self.config.role_setup
+
+        # 1. Agregar skill instructions (existente)
         if hasattr(self, 'skill_instructions') and self.skill_instructions:
             final_role_setup = f"{self.config.role_setup}{self.skill_instructions}"
+
+        # 2. Agregar shelf context (persistente + efímero)
+        if shelf_context:
+            final_role_setup = f"""{final_role_setup}
+
+###################################
+## ACTIVE KNOWLEDGE (from shelf) ##
+###################################
+
+{shelf_context}"""
+
         if self.config.role_setup:
             messages.append(
                 {"role": "system", "content": final_role_setup})
@@ -721,7 +793,13 @@ Args:
 
     def _execute_skill(self, skill_name: str, arguments: Dict[str, Any]):
         """Execute a skill with the given arguments."""
+        # Primero buscar en registry (persistentes)
         skill = self.get_skill_by_name(skill_name)
+
+        # Si no está en registry, buscar en ephemeral_skills
+        if skill is None and hasattr(self, '_ephemeral_skills') and skill_name in self._ephemeral_skills:
+            skill = self._ephemeral_skills[skill_name]
+
         if skill is None:
             raise ValueError(f"Skill not found: {skill_name}")
         #print(f"DEBUG: _execute_skill llamado para {skill_name} con async_execution={self.async_execution}")

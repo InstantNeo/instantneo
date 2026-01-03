@@ -8,6 +8,7 @@ setup(
         'docstring_parser',
         'httpx',
         'cryptography',
+        'pyyaml',
     ],
     author='Diego Ponce de León Franco',
     author_email='dponcedeleonf@gmail.com',
