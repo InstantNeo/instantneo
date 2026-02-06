@@ -962,6 +962,7 @@ Args:
             "openai": ("instantneo.adapters.openai_adapter", "OpenAIAdapter"),
             "anthropic": ("instantneo.adapters.anthropic_adapter", "AnthropicAdapter"),
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
+            "cerebras": ("instantneo.adapters.cerebras_adapter", "CerebrasAdapter"),
             "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
             "vertexai": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
         }
