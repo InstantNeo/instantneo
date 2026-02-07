@@ -22,3 +22,10 @@ try:
     __all__.append('GroqAdapter')
 except ImportError:
     GroqAdapter = None
+
+# Intentar importar CerebrasAdapter si está disponible
+try:
+    from .cerebras_adapter import CerebrasAdapter
+    __all__.append('CerebrasAdapter')
+except ImportError:
+    CerebrasAdapter = None

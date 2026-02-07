@@ -96,6 +96,31 @@ from .groq import (
     GroqError,
 )
 
+# Tipos de metadata de ejecución
+from .run_info import (
+    SkillExecution,
+    LLMCall,
+    RunInfo,
+)
+
+# Tipos específicos de Cerebras
+from .cerebras import (
+    Message as CerebrasMessage,
+    ToolFunction as CerebrasToolFunction,
+    Tool as CerebrasTool,
+    Prediction as CerebrasPrediction,
+    FunctionCall as CerebrasFunctionCall,
+    ToolCall as CerebrasToolCall,
+    ResponseMessage as CerebrasResponseMessage,
+    Choice as CerebrasChoice,
+    Usage as CerebrasUsage,
+    PromptTokensDetails,
+    CompletionTokensDetails,
+    TimeInfo,
+    CerebrasResponse,
+    CerebrasError,
+)
+
 __all__ = [
     # Standard types (interfaz unificada)
     "TextContent",
@@ -172,4 +197,25 @@ __all__ = [
     "GroqUsage",
     "GroqResponse",
     "GroqError",
+
+    # Cerebras types
+    "CerebrasMessage",
+    "CerebrasToolFunction",
+    "CerebrasTool",
+    "CerebrasPrediction",
+    "CerebrasFunctionCall",
+    "CerebrasToolCall",
+    "CerebrasResponseMessage",
+    "CerebrasChoice",
+    "CerebrasUsage",
+    "PromptTokensDetails",
+    "CompletionTokensDetails",
+    "TimeInfo",
+    "CerebrasResponse",
+    "CerebrasError",
+
+    # Run info types
+    "SkillExecution",
+    "LLMCall",
+    "RunInfo",
 ]

@@ -2,8 +2,11 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Callable, Optional, Union, Generator, Type, AsyncGenerator
 import asyncio
 import json
+import time
 import threading
+from datetime import datetime, timezone
 from instantneo.skills import SkillManager
+from instantneo.models.run_info import RunInfo, LLMCall, SkillExecution
 from instantneo.skills.skill_manager_operations import SkillManagerOperations
 from instantneo.utils.image_utils import process_images
 from instantneo.utils.skill_utils import format_tool
@@ -268,10 +271,16 @@ class InstantNeo:
         self.tool_calls = []  # For accumulating tool calls in streaming
         self.async_execution = False  # Default value, will be set in run method
         self._ephemeral_skills = {}  # Temporary storage for ephemeral skills during run
+        self._last_run: Optional[RunInfo] = None
 
     ##################################
     #         PUBLIC METHODS         #
     ##################################
+
+    @property
+    def last_run(self) -> Optional[RunInfo]:
+        """Returns the RunInfo from the most recent run() call."""
+        return self._last_run
 
     ##### Skill Management #####
     def mod_role(self,new_role):
@@ -597,10 +606,46 @@ Args:
 
         #print("Adapter params:", json.dumps(adapter_params.to_dict(), indent=2))
 
+        # Create RunInfo to capture metadata
+        run_info = RunInfo(
+            provider=self.config.provider,
+            model=run_params.model,
+            prompt=prompt,
+            execution_mode=execution_mode,
+            stream=run_params.stream,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            messages_sent=messages,
+            run_params={
+                "model": run_params.model,
+                "temperature": run_params.temperature,
+                "max_tokens": run_params.max_tokens,
+                "presence_penalty": run_params.presence_penalty,
+                "frequency_penalty": run_params.frequency_penalty,
+                "stop": run_params.stop,
+                "seed": run_params.seed,
+                "execution_mode": run_params.execution_mode,
+                "stream": run_params.stream,
+            },
+        )
+
+        start_time = time.perf_counter()
+
         if run_params.stream:
-            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response)
+            # For streaming, assign run_info before returning the generator.
+            # The generator populates it progressively as chunks are consumed.
+            self._last_run = run_info
+            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, start_time)
         else:
-            return self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response)
+            try:
+                result = self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info)
+                run_info.duration_ms = (time.perf_counter() - start_time) * 1000
+                return result
+            except Exception as e:
+                run_info.error = str(e)
+                run_info.duration_ms = (time.perf_counter() - start_time) * 1000
+                raise
+            finally:
+                self._last_run = run_info
 
     #################################
     #        PRIVATE METHODS        #
@@ -683,7 +728,7 @@ Args:
             messages.append({"role": "user", "content": prompt})
         return messages
 
-    def _process_response(self, response, execution_mode):
+    def _process_response(self, response, execution_mode, run_info: Optional[RunInfo] = None):
         """Process the response from the language model."""
         if not hasattr(response, 'choices') or len(response.choices) == 0:
             #print("No 'choices' were found in the response")
@@ -701,12 +746,12 @@ Args:
 
         if tool_calls:
             print(f'{"*" * 40}\n* {"I am using my skills. Wait for it...":^36} *\n{"*" * 40}\n')
-            results = self._handle_tool_calls(tool_calls, execution_mode)
+            results = self._handle_tool_calls(tool_calls, execution_mode, run_info)
             return results
         else:
             return content
 
-    def _handle_tool_calls(self, tool_calls, execution_mode):
+    def _handle_tool_calls(self, tool_calls, execution_mode, run_info: Optional[RunInfo] = None):
         """Handle tool calls from the language model."""
         results = []
         futures = []  # Para almacenar futures en caso de ejecución asíncrona
@@ -721,23 +766,50 @@ Args:
                 if function_name in self.get_skill_names():
                     skill = self.get_skill_by_name(function_name)
 
+                    # Track skill execution
+                    skill_exec = SkillExecution(
+                        name=function_name,
+                        arguments=function_args,
+                        execution_mode=execution_mode,
+                    )
+
                     if execution_mode == self.EXECUTION_ONLY:
-                        result = self._execute_skill(
-                            function_name, function_args)
+                        try:
+                            result = self._execute_skill(
+                                function_name, function_args)
+                            skill_exec.result = result
+                        except Exception as e:
+                            skill_exec.exception = str(e)
+                            raise
                         if self.async_execution:
                             futures.append(result)
                         #print(f"Función {function_name} ejecutada usando EXECUTION_ONLY (async_execution={self.async_execution})")
                     elif execution_mode == self.GET_ARGS:
+                        skill_exec.result = {"name": function_name, "arguments": function_args}
                         results.append(
                             {"name": function_name, "arguments": function_args})
                     else:  # WAIT_RESPONSE
                         if self.async_execution:
-                            results.append(self._execute_skill(
-                                function_name, function_args))
+                            try:
+                                result = self._execute_skill(
+                                    function_name, function_args)
+                                skill_exec.result = result
+                                results.append(result)
+                            except Exception as e:
+                                skill_exec.exception = str(e)
+                                raise
                         else:
-                            result = self._execute_skill(
-                                function_name, function_args)
-                            results.append(result)
+                            try:
+                                result = self._execute_skill(
+                                    function_name, function_args)
+                                skill_exec.result = result
+                                results.append(result)
+                            except Exception as e:
+                                skill_exec.exception = str(e)
+                                raise
+
+                    if run_info:
+                        run_info.skill_executions.append(skill_exec)
                 else:
                     print(f"Función {function_name} no encontrada en las skills disponibles")
 
@@ -813,9 +885,16 @@ Args:
             skill = next(iter(skill.values())) if isinstance(skill, dict) else skill
             return skill(**arguments)
 
-    def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool):
+    def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, start_time: float):
         """Handle streaming responses from the language model."""
         #print(f"DEBUG: Valor de self.async_execution en _handle_streaming_response: {self.async_execution}")
+
+        # Create LLMCall to populate progressively
+        llm_call = LLMCall(
+            messages_sent=adapter_params.messages,
+        )
+        run_info.llm_calls.append(llm_call)
+
         stream = self.adapter.create_streaming_chat_completion(
             **adapter_params.to_dict())
         full_response = ""
@@ -845,6 +924,16 @@ Args:
 
                     if delta.get('finish_reason') == 'stop':
                         break
+
+                    # Capture usage from final chunk if present
+                    if 'usage' in chunk_data and chunk_data['usage']:
+                        usage_data = chunk_data['usage']
+                        llm_call.usage = {
+                            "input_tokens": usage_data.get('prompt_tokens', usage_data.get('input_tokens', 0)),
+                            "output_tokens": usage_data.get('completion_tokens', usage_data.get('output_tokens', 0)),
+                            "total_tokens": usage_data.get('total_tokens', 0),
+                        }
+                        run_info.usage = llm_call.usage
                 else:
                     full_response += str(chunk_data)
                     if execution_mode == self.WAIT_RESPONSE:
@@ -855,7 +944,20 @@ Args:
                 if execution_mode == self.WAIT_RESPONSE:
                     yield str(chunk)
             except Exception as e:
+                run_info.error = str(e)
                 print(f"Error inesperado: {e}")
+
+        # Update LLMCall with final data
+        llm_call.response_content = full_response
+        llm_call.finish_reason = "tool_calls" if tool_calls else "stop"
+        if tool_calls:
+            llm_call.tool_calls_requested = [
+                {"name": tc.function.name, "arguments": tc.function.arguments}
+                for tc in tool_calls
+                if hasattr(tc, 'function')
+            ]
+        run_info.response_content = full_response
+        run_info.finish_reason = llm_call.finish_reason
 
         # Procesamos las herramientas según el modo de ejecución
         if tool_calls:
@@ -863,8 +965,19 @@ Args:
                 #print(f"DEBUG: En streaming, usando _execute_skill con async_execution={self.async_execution}")
                 futures = []
                 for tool_call in tool_calls:
-                    result = self._execute_skill(
-                        tool_call.function.name, json.loads(tool_call.function.arguments))
+                    function_name = tool_call.function.name
+                    function_args = json.loads(tool_call.function.arguments)
+                    skill_exec = SkillExecution(
+                        name=function_name,
+                        arguments=function_args,
+                        execution_mode=execution_mode,
+                    )
+                    try:
+                        result = self._execute_skill(function_name, function_args)
+                        skill_exec.result = result
+                    except Exception as e:
+                        skill_exec.exception = str(e)
+                    run_info.skill_executions.append(skill_exec)
                     if self.async_execution:
                         futures.append(result)
 
@@ -888,6 +1001,15 @@ Args:
 
                 yield "Todas las funciones se han ejecutado en segundo plano."
             elif execution_mode == self.GET_ARGS:
+                for tool_call in tool_calls:
+                    if hasattr(tool_call, 'function'):
+                        skill_exec = SkillExecution(
+                            name=tool_call.function.name,
+                            arguments=json.loads(tool_call.function.arguments) if isinstance(tool_call.function.arguments, str) else tool_call.function.arguments,
+                            execution_mode=execution_mode,
+                            result={"name": tool_call.function.name, "arguments": tool_call.function.arguments},
+                        )
+                        run_info.skill_executions.append(skill_exec)
                 yield tool_calls
             elif execution_mode == self.WAIT_RESPONSE and tool_calls:
                 # Para WAIT_RESPONSE, ejecutamos las herramientas y devolvemos los resultados
@@ -901,17 +1023,33 @@ Args:
                         function_args = json.loads(
                             tool_call.function.arguments)
 
+                        skill_exec = SkillExecution(
+                            name=function_name,
+                            arguments=function_args,
+                            execution_mode=execution_mode,
+                        )
+
                         if function_name in self.get_skill_names():
                             if self.async_execution:
-                                result = self._execute_skill(
-                                    function_name, function_args)
-                                futures.append(result)
+                                try:
+                                    result = self._execute_skill(
+                                        function_name, function_args)
+                                    skill_exec.result = result
+                                    futures.append(result)
+                                except Exception as e:
+                                    skill_exec.exception = str(e)
                             else:
-                                result = self._execute_skill(
-                                    function_name, function_args)
-                                results.append(result)
+                                try:
+                                    result = self._execute_skill(
+                                        function_name, function_args)
+                                    skill_exec.result = result
+                                    results.append(result)
+                                except Exception as e:
+                                    skill_exec.exception = str(e)
                         else:
                             print(f"Función {function_name} no encontrada en las skills disponibles")
+
+                        run_info.skill_executions.append(skill_exec)
 
 
                 # Si hay futures pendientes, esperamos a que terminen
@@ -935,7 +1073,7 @@ Args:
                         #print(f"Resultados de ejecución asíncrona en streaming: {results}")
                     except Exception as e:
                         print(f"Error al ejecutar corrutinas en streaming con WAIT_RESPONSE: {e}")
-                        
+
 
                 # Devolvemos los resultados
                 if results:
@@ -947,14 +1085,93 @@ Args:
                 "tool_calls": tool_calls
             }
 
-    def _handle_normal_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool):
+        # Finalize timing
+        run_info.duration_ms = (time.perf_counter() - start_time) * 1000
+
+    def _handle_normal_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo):
         """Handle normal (non-streaming) responses from the language model."""
         response = self.adapter.create_chat_completion(
             **adapter_params.to_dict())
+
+        # Capture LLM call metadata
+        llm_call = LLMCall(
+            messages_sent=adapter_params.messages,
+            raw_response=response,
+        )
+
+        if hasattr(response, 'choices') and response.choices:
+            choice = response.choices[0]
+            llm_call.response_content = choice.message.content if hasattr(choice, 'message') and choice.message else None
+            llm_call.finish_reason = response.finish_reason if hasattr(response, 'finish_reason') else None
+
+            # Capture tool calls requested
+            if hasattr(choice, 'message') and choice.message and hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                llm_call.tool_calls_requested = [
+                    {"name": tc.function.name, "arguments": tc.function.arguments}
+                    for tc in choice.message.tool_calls
+                    if hasattr(tc, 'function')
+                ]
+
+        if hasattr(response, 'usage') and response.usage:
+            usage = response.usage
+            llm_call.usage = {
+                "input_tokens": usage.input_tokens if hasattr(usage, 'input_tokens') else 0,
+                "output_tokens": usage.output_tokens if hasattr(usage, 'output_tokens') else 0,
+                "total_tokens": usage.total_tokens if hasattr(usage, 'total_tokens') else 0,
+            }
+            run_info.usage = llm_call.usage
+
+        if hasattr(response, 'id'):
+            llm_call.response_id = response.id
+        if hasattr(response, 'model'):
+            llm_call.response_model = response.model
+
+        run_info.llm_calls.append(llm_call)
+        run_info.provider_timing = self._extract_provider_timing(response)
+
         if return_full_response:
+            run_info.response_content = llm_call.response_content
+            run_info.finish_reason = llm_call.finish_reason
             return response
         else:
-            return self._process_response(response, execution_mode)
+            result = self._process_response(response, execution_mode, run_info)
+            run_info.response_content = llm_call.response_content
+            run_info.finish_reason = llm_call.finish_reason
+            return result
+
+    def _extract_provider_timing(self, response) -> Optional[Dict]:
+        """Extract provider-specific timing from the raw response.
+
+        Supports:
+        - Cerebras: time_info with queue_time, prompt_time, completion_time, total_time
+        - Groq: usage.prompt_time, usage.completion_time, usage.total_time
+        """
+        timing = {}
+
+        # Cerebras: response has time_info attribute
+        raw = response.raw_response if hasattr(response, 'raw_response') and response.raw_response else response
+        if hasattr(raw, 'time_info') and raw.time_info:
+            ti = raw.time_info
+            if hasattr(ti, 'queue_time'):
+                timing['queue_time'] = ti.queue_time
+            if hasattr(ti, 'prompt_time'):
+                timing['prompt_time'] = ti.prompt_time
+            if hasattr(ti, 'completion_time'):
+                timing['completion_time'] = ti.completion_time
+            if hasattr(ti, 'total_time'):
+                timing['total_time'] = ti.total_time
+
+        # Groq: usage has prompt_time, completion_time, total_time
+        usage = raw.usage if hasattr(raw, 'usage') and raw.usage else None
+        if usage:
+            if hasattr(usage, 'prompt_time') and usage.prompt_time is not None:
+                timing['prompt_time'] = usage.prompt_time
+            if hasattr(usage, 'completion_time') and usage.completion_time is not None:
+                timing['completion_time'] = usage.completion_time
+            if hasattr(usage, 'total_time') and usage.total_time is not None:
+                timing['total_time'] = usage.total_time
+
+        return timing if timing else None
 
     def _create_adapter(self):
         """Create an adapter based on the provider."""
@@ -962,6 +1179,7 @@ Args:
             "openai": ("instantneo.adapters.openai_adapter", "OpenAIAdapter"),
             "anthropic": ("instantneo.adapters.anthropic_adapter", "AnthropicAdapter"),
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
+            "cerebras": ("instantneo.adapters.cerebras_adapter", "CerebrasAdapter"),
             "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
             "vertexai": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
         }

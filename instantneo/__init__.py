@@ -22,6 +22,9 @@ Package structure:
 # Importación de la clase principal
 from .core import InstantNeo
 
+# Importación de modelos de metadata de ejecución
+from .models.run_info import RunInfo
+
 # Importaciones para Skills
 from .skills.skill_decorators import skill
 from .skills.skill_manager import SkillManager
@@ -65,4 +68,4 @@ class Adapters:
     Anthropic = AnthropicAdapter
 
 # Definir qué se exporta
-__all__ = ["InstantNeo", "Skills", "Adapters"]
+__all__ = ["InstantNeo", "RunInfo", "Skills", "Adapters"]
