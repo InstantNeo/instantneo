@@ -96,6 +96,13 @@ from .groq import (
     GroqError,
 )
 
+# Tipos de metadata de ejecución
+from .run_info import (
+    SkillExecution,
+    LLMCall,
+    RunInfo,
+)
+
 # Tipos específicos de Cerebras
 from .cerebras import (
     Message as CerebrasMessage,
@@ -206,4 +213,9 @@ __all__ = [
     "TimeInfo",
     "CerebrasResponse",
     "CerebrasError",
+
+    # Run info types
+    "SkillExecution",
+    "LLMCall",
+    "RunInfo",
 ]
