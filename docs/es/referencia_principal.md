@@ -9,8 +9,8 @@ InstantNeo proporciona una interfaz unificada para crear agentes de IA que puede
 Un agente de InstantNeo consiste en:
 
 1. **Configuración Base**: Definida cuando creas una instancia, incluyendo el proveedor del LLM, modelo, prompt del sistema y otros parámetros por defecto.
-2. **Registro de Skills**: Funciones que el agente puede ejecutar para realizar tareas específicas.
-3. **Motor de Ejecución**: Maneja la comunicación con el LLM y ejecuta skills según sea necesario.
+2. **Registro de Tools**: Funciones que el agente puede ejecutar para realizar tareas específicas.
+3. **Motor de Ejecución**: Maneja la comunicación con el LLM y ejecuta tools según sea necesario.
 
 ### Relación entre Instancia y Run
 
@@ -28,7 +28,7 @@ InstantNeo(
     api_key: str,
     model: str,
     role_setup: str,
-    skills: Optional[Union[List[str], SkillManager]] = None,
+    skills: Optional[Union[List[Callable], AgentCapabilities]] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = 200,
     presence_penalty: Optional[float] = None,
@@ -48,7 +48,7 @@ InstantNeo(
 - **api_key**: Tu API key para el proveedor seleccionado
 - **model**: El modelo específico a usar (ej., "gpt-4o", "claude-3-opus-20240229")
 - **role_setup**: El prompt del sistema que define la personalidad e instrucciones de tu agente
-- **skills**: Skills opcionales para hacer disponibles al agente desde el inicio
+- **skills**: Tools opcionales para hacer disponibles al agente desde el inicio
 - **temperature**: Controla la aleatoriedad en las respuestas (mayor = más creativo, menor = más determinista)
 - **max_tokens**: Longitud máxima de la respuesta
 - **images**: Imágenes por defecto para incluir con los prompts (para modelos multimodales)
@@ -57,7 +57,7 @@ Crear una instancia de InstantNeo te da varias ventajas:
 
 1. **Reutilización del Agente**: Configuras al agente una vez, y lo usa muchas veces con diferentes prompts según tareas
 2. **Identidad Consistente**: Mantén un rol y comportamiento consistente a través de las interacciones
-3. **Gestión de Skills**: Registra skills una vez y úsalas en múltiples ejecuciones
+3. **Gestión de Tools**: Registra tools una vez y úsalas en múltiples ejecuciones
 4. **Configuraciones por Defecto**: Establece valores por defecto razonables para los parámetros del modelo
 
 ### Ejemplo: Creando Diferentes Tipos de Agentes
@@ -68,7 +68,7 @@ coding_assistant = InstantNeo(
     provider="anthropic",
     api_key="your-api-key",
     model="claude-3-opus-20240229",
-    role_setup="""Eres un asistente de programación en Python. 
+    role_setup="""Eres un asistente de programación en Python.
     Ayudas a escribir código limpio, eficiente y bien documentado.
     Explicas tu razonamiento y sugieres mejoras.""",
     temperature=0.2,  # Temperatura más baja para programación más precisa
@@ -128,15 +128,15 @@ Cuando llamas a `run()`, ocurren varias cosas importantes:
    - Luego aplica cualquier override que hayas especificado en la llamada a `run()`
    - Esto permite flexibilidad mientras se mantienen valores por defecto consistentes
 
-2. **Selección de Skills**:
-   - Si especificas `skills` en `run()`, solo esos skills están disponibles para este run específico
-   - Si no, todos los skills registrados con el agente están disponibles
+2. **Selección de Tools**:
+   - Si especificas `skills` en `run()`, solo esos tools están disponibles para este run específico
+   - Si no, todos los tools registrados con el agente están disponibles
    - Esto te permite controlar exactamente qué capacidades están disponibles para cada run
 
 3. **Preparación del Mensaje**:
    - El prompt del sistema (role_setup) se envía al modelo con tu prompt
    - Cualquier imagen se procesa y se agrega al mensaje
-   - Los skills se formatean para que el LLM los entienda
+   - Los tools se formatean para que el LLM los entienda
 
 4. **Interacción con el LLM**:
    - El mensaje preparado se envía al proveedor del LLM apropiado
@@ -148,16 +148,16 @@ Cuando llamas a `run()`, ocurren varias cosas importantes:
 La capacidad de sobreescribir parámetros en tiempo de ejecución le da a InstantNeo una flexibilidad excepcional:
 
 1. **Configuraciones Específicas por Tarea**: Ajusta temperature, tokens, etc. según la tarea específica
-2. **Uso Selectivo de Skills**: Solo expone los skills necesarios para una consulta específica
+2. **Uso Selectivo de Tools**: Solo expone los tools necesarios para una consulta específica
 3. **Contenido Dinámico**: Incluye diferentes imágenes o contexto adicional según sea necesario
-4. **Control de Ejecución**: Elige cómo se ejecutan los skills según el caso de uso
+4. **Control de Ejecución**: Elige cómo se ejecutan los tools según el caso de uso
 
 ### Parámetros Clave de Run
 
 - **prompt**: Es el input. La instrucción, entrada o consulta.
-- **execution_mode**: Define cómo deben ejecutarse las skills (`wait_response`, `execution_only`, o `get_args`)
-- **async_execution**: Determina si las skills se deben ejecutar de forma asíncrona
-- **skills**: Lista de nombres de skills para hacer disponibles en este run (sobreescribe los defaults de la instancia)
+- **execution_mode**: Define cómo deben ejecutarse los tools (`wait_response`, `execution_only`, o `get_args`)
+- **async_execution**: Determina si los tools se deben ejecutar de forma asíncrona
+- **skills**: Lista de nombres de tools para hacer disponibles en este run (sobreescribe los defaults de la instancia)
 - **images**: Imágenes para incluir con este prompt específico
 - **stream**: Indica si se transmitirá la respuesta en chunks
 
@@ -170,10 +170,10 @@ La capacidad de sobreescribir parámetros en tiempo de ejecución le da a Instan
 response = agent.run("¿Cuál es la capital de Francia?")
 print(response)
 
-# Con skills específicos habilitados
+# Con tools específicos habilitados
 response = agent.run(
     prompt="¿Cuánto es 125 + 437?",
-    skills=["add"]  # Solo hacer disponible el skill add
+    skills=["add"]  # Solo hacer disponible el tool add
 )
 ```
 
@@ -239,7 +239,7 @@ context_response = agent.run(
 #### Diferentes Modos de Ejecución
 
 ```python
-# Esperar respuesta (por defecto) - bloquea hasta que la ejecución del skill se completa
+# Esperar respuesta (por defecto) - bloquea hasta que la ejecución del tool se completa
 result = agent.run(
     prompt="Calcula el área de un círculo con radio 5",
     skills=["circle_area"],
@@ -247,7 +247,7 @@ result = agent.run(
 )
 print(f"El área es: {result}")
 
-# Ejecutar sin esperar - dispara el skill y continúa inmediatamente
+# Ejecutar sin esperar - dispara el tool y continúa inmediatamente
 agent.run(
     prompt="Registra esta actividad de usuario en la base de datos",
     skills=["log_activity"],
@@ -292,18 +292,18 @@ agent.mod_role("Ahora eres un tutor de matemáticas enfocado en explicar concept
 
 **Utilidad**: Te permite reutilizar un agente existente para un rol diferente sin crear una nueva instancia.
 
-### Gestión de Skills
+### Gestión de Tools
 
-Estos métodos ayudan a gestionar los skills disponibles para el agente. Una guía más detallada sobre skills se proporcionará por separado.
+Estos métodos ayudan a gestionar los tools disponibles para el agente. Una guía más detallada sobre tools se proporcionará por separado.
 
-#### register_skill
+#### register_tool
 
-Agrega un skill a los skills disponibles del agente.
+Agrega un tool a los tools disponibles del agente.
 
 ```python
-from instantneo.skills import skill
+from instantneo.skills import tool
 
-@skill(
+@tool(
     description="Calcular el área de un círculo",
     parameters={"radius": "El radio del círculo"}
 )
@@ -311,25 +311,25 @@ def circle_area(radius: float) -> float:
     import math
     return math.pi * radius**2
 
-agent.register_skill(circle_area)
+agent.register_tool(circle_area)
 ```
 
 **Utilidad**: Expande las capacidades del agente con nuevas funciones que puede ejecutar.
 
-#### get_skill_names
+#### get_tool_names
 
-Lista todos los nombres de skills registrados.
+Lista todos los nombres de tools registrados.
 
 ```python
-available_skills = agent.get_skill_names()
-print(f"Skills disponibles: {available_skills}")
+available_tools = agent.get_tool_names()
+print(f"Tools disponibles: {available_tools}")
 ```
 
-**Utilidad**: Útil para debugging o seleccionar dinámicamente skills a usar en un run.
+**Utilidad**: Útil para debugging o seleccionar dinámicamente tools a usar en un run.
 
 #### load_skills_from_file, load_skills_from_folder
 
-Carga skills desde archivos Python externos o carpetas.
+Carga tools desde archivos Python externos o carpetas.
 
 ```python
 # Cargar desde un archivo específico
@@ -339,21 +339,21 @@ agent.load_skills_from_file("./math_skills.py")
 agent.load_skills_from_folder("./skills_library")
 ```
 
-**Utilidad**: Permite organización modular de skills y cargarlos según sea necesario.
+**Utilidad**: Permite organización modular de tools y cargarlos según sea necesario.
 
-### Operaciones del Skill Manager
+### Operaciones de AgentCapabilities
 
-Estos métodos proporcionan operaciones de conjuntos para gestionar colecciones de skills. Se cubrirán con más detalle en la guía dedicada a skills.
+Estos métodos proporcionan operaciones de conjuntos para gestionar colecciones de tools. Se cubrirán con más detalle en la guía dedicada a tools.
 
 ```python
-# Combinar skills de otro agente
+# Combinar tools de otro agente
 agent1.sm_ops_union(agent2)
 
-# Mantener solo skills que existen en ambos agentes
+# Mantener solo tools que existen en ambos agentes
 agent1.sm_ops_intersection(agent2)
 
-# Comparar conjuntos de skills
+# Comparar conjuntos de tools
 comparison = agent1.sm_ops_compare(agent2)
 ```
 
-**Utilidad**: Permite gestión sofisticada de colecciones de skills entre agentes.
+**Utilidad**: Permite gestión sofisticada de colecciones de tools entre agentes.

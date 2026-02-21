@@ -12,15 +12,15 @@ from typing import Any, Dict, List, Optional
 
 
 @dataclass
-class SkillExecution:
+class ToolExecution:
     """
-    Información sobre la ejecución de un skill individual.
+    Información sobre la ejecución de un tool individual.
 
     Attributes:
-        name: Nombre del skill ejecutado
-        arguments: Argumentos pasados al skill (dict, no JSON string)
-        result: Resultado retornado por el skill
-        exception: Mensaje de error si el skill falló
+        name: Nombre del tool ejecutado
+        arguments: Argumentos pasados al tool (dict, no JSON string)
+        result: Resultado retornado por el tool
+        exception: Mensaje de error si el tool falló
         execution_mode: Modo de ejecución usado (wait_response, execution_only, get_args)
     """
     name: str
@@ -28,6 +28,9 @@ class SkillExecution:
     result: Any = None
     exception: Optional[str] = None
     execution_mode: str = "wait_response"
+
+# Backward compatibility alias
+SkillExecution = ToolExecution
 
 
 @dataclass
@@ -100,7 +103,12 @@ class RunInfo:
 
     # Detalle
     llm_calls: List[LLMCall] = field(default_factory=list)
-    skill_executions: List[SkillExecution] = field(default_factory=list)
+    tool_executions: List[ToolExecution] = field(default_factory=list)
+
+    @property
+    def skill_executions(self):
+        """Backward compatibility alias."""
+        return self.tool_executions
 
     # Tokens (agregado)
     usage: Optional[Dict[str, int]] = None
@@ -121,7 +129,7 @@ class RunInfo:
 
         Excluye raw_response de los LLMCalls para evitar objetos no serializables.
         """
-        def _skill_exec_to_dict(se: SkillExecution) -> Dict[str, Any]:
+        def _skill_exec_to_dict(se: ToolExecution) -> Dict[str, Any]:
             return {
                 "name": se.name,
                 "arguments": se.arguments,
@@ -165,7 +173,7 @@ class RunInfo:
             "response_content": self.response_content,
             "finish_reason": self.finish_reason,
             "llm_calls": [_llm_call_to_dict(lc) for lc in self.llm_calls],
-            "skill_executions": [_skill_exec_to_dict(se) for se in self.skill_executions],
+            "tool_executions": [_skill_exec_to_dict(se) for se in self.tool_executions],
             "usage": self.usage,
             "run_params": _safe_serialize(self.run_params),
             "error": self.error,

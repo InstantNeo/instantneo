@@ -4,15 +4,17 @@ This package provides the main interface to access InstantNeo's functionalities.
 
 Easy import:
 ```python
+from instantneo import InstantNeo, tool, AgentCapabilities, CapabilitiesOperations
+# Or using backward-compat names:
 from instantneo import InstantNeo, skill, SkillManager, SkillManagerOperations
 ```
 
 Package structure:
 - instantneo.InstantNeo: Main class encapsulating InstantNeo's logic.
-- instantneo.Skills: Contains utilities related to skills.
-    - instantneo.Skills.skill: Decorator to define skills.
-    - instantneo.Skills.SkillManager: Skills manager.
-    - instantneo.Skills.SkillManagerOperations: Additional operations for managing skills and their managers.
+- instantneo.Tools: Contains utilities related to tools.
+    - instantneo.Tools.tool: Decorator to define tools.
+    - instantneo.Tools.AgentCapabilities: Tool and capability registry.
+    - instantneo.Tools.CapabilitiesOperations: Set operations for capabilities.
 - instantneo.Adapters: Contains adapters for different providers.
     - instantneo.Adapters.Groq: Adapter for Groq.
     - instantneo.Adapters.Openai: Adapter for OpenAI.
@@ -25,37 +27,43 @@ from .core import InstantNeo
 # Importación de modelos de metadata de ejecución
 from .models.run_info import RunInfo
 
-# Importaciones para Skills
-from .skills.skill_decorators import skill
-from .skills.skill_manager import SkillManager
-from .skills.skill_manager_operations import SkillManagerOperations
+# New canonical imports
+from .skills.tool_decorators import tool
+from .skills.agent_capabilities import AgentCapabilities
+from .skills.capabilities_operations import CapabilitiesOperations
+
+# Backward compatibility imports
+from .skills.tool_decorators import skill
+from .skills.agent_capabilities import AgentCapabilities as SkillManager
+from .skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations
 
 # Importaciones para Adapters - Usando importación condicional
 
-# Intentar importar OpenAIAdapter si está disponible
 try:
     from .adapters.openai_adapter import OpenAIAdapter
-    # print("OpenAIAdapter importado correctamente")
 except ImportError:
     OpenAIAdapter = None
 
-# Intentar importar AnthropicAdapter si está disponible
 try:
     from .adapters.anthropic_adapter import AnthropicAdapter
-    # print("AnthropicAdapter importado correctamente")
 except ImportError:
     AnthropicAdapter = None
 
-# Intentar importar GroqAdapter si está disponible
 try:
     from .adapters.groq_adapter import GroqAdapter
-    # print("GroqAdapter importado correctamente")
 except ImportError:
     GroqAdapter = None
 
-# Namespace para Skills
+# New namespace
+class Tools:
+    """Tools toolkit"""
+    tool = tool
+    AgentCapabilities = AgentCapabilities
+    CapabilitiesOperations = CapabilitiesOperations
+
+# Backward compat namespace
 class Skills:
-    """Skills toolkit"""
+    """Skills toolkit (backward compat alias for Tools)"""
     skill = skill
     SkillManager = SkillManager
     SkillManagerOperations = SkillManagerOperations
@@ -68,4 +76,9 @@ class Adapters:
     Anthropic = AnthropicAdapter
 
 # Definir qué se exporta
-__all__ = ["InstantNeo", "RunInfo", "Skills", "Adapters"]
+__all__ = [
+    "InstantNeo", "RunInfo",
+    "tool", "AgentCapabilities", "CapabilitiesOperations",
+    "skill", "SkillManager", "SkillManagerOperations",
+    "Tools", "Skills", "Adapters",
+]

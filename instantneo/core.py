@@ -5,11 +5,13 @@ import json
 import time
 import threading
 from datetime import datetime, timezone
-from instantneo.skills import SkillManager
-from instantneo.models.run_info import RunInfo, LLMCall, SkillExecution
-from instantneo.skills.skill_manager_operations import SkillManagerOperations
+from instantneo.skills.agent_capabilities import AgentCapabilities
+from instantneo.skills.agent_capabilities import AgentCapabilities as SkillManager  # backward compat
+from instantneo.models.run_info import RunInfo, LLMCall, ToolExecution, SkillExecution
+from instantneo.skills.capabilities_operations import CapabilitiesOperations
+from instantneo.skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations  # backward compat
 from instantneo.utils.image_utils import process_images
-from instantneo.utils.skill_utils import format_tool
+from instantneo.utils.tool_utils import format_tool
 
 
 @dataclass(kw_only=True)
@@ -32,7 +34,7 @@ class InstantNeoParams(BaseParams):
     provider: str
     api_key: Optional[str] = None
     role_setup: str
-    skills: Optional[Union[List[str], SkillManager, List[SkillManager]]] = None
+    tools: Optional[Union[List[str], AgentCapabilities, List[AgentCapabilities]]] = None
     images: Optional[Union[str, List[str]]] = None
     image_detail: str = "auto"
     # Vertex AI specific parameters
@@ -48,7 +50,7 @@ class RunParams(BaseParams):
     execution_mode: str = "wait_response"
     async_execution: bool = False
     return_full_response: bool = False
-    skills: Optional[List[str]] = None,
+    tools: Optional[List[str]] = None,
     images: Optional[Union[str, List[str]]] = None
     image_detail: Optional[str] = None
     additional_params: Dict[str, Any] = field(default_factory=dict)
@@ -68,7 +70,7 @@ class RunParams(BaseParams):
             logit_bias=instantneo_params.logit_bias,
             seed=instantneo_params.seed,
             stream=instantneo_params.stream,
-            skills=instantneo_params.skills,
+            tools=instantneo_params.tools,
             images=instantneo_params.images,
             image_detail=instantneo_params.image_detail,
         )
@@ -187,7 +189,8 @@ class InstantNeo:
         api_key: Optional[str],
         model: str,
         role_setup: str,
-        skills: Optional[Union[List[str], SkillManager, List[SkillManager]]] = None,
+        tools: Optional[Union[List[str], AgentCapabilities, List[AgentCapabilities]]] = None,
+        skills=None,  # backward compat alias for tools
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = 200,
         presence_penalty: Optional[float] = None,
@@ -203,12 +206,16 @@ class InstantNeo:
         service_account_file: Optional[str] = None,
     ):
         """Initialize an InstantNeo instance."""
+        # Accept skills= as backward compat alias for tools=
+        if skills is not None and tools is None:
+            tools = skills
+
         self.config = InstantNeoParams(
             provider=provider,
             api_key=api_key,
             model=model,
             role_setup=role_setup,
-            skills=skills,
+            tools=tools,
             temperature=temperature,
             max_tokens=max_tokens,
             presence_penalty=presence_penalty,
@@ -223,54 +230,48 @@ class InstantNeo:
             service_account_file=service_account_file,
         )
 
-        # print(f"Tipo de 'self.config.skills': {type(self.config.skills)}")
+        # Initialize capabilities
+        tools_input = self.config.tools
 
-        # Initialize skill manager
-        skills_input = self.config.skills        
-
-        if isinstance(skills_input, SkillManager):
-                    # Caso 1: Un solo SkillManager -> Asignación directa
-                    self.skill_manager = skills_input
-        elif isinstance(skills_input, list):
-            if all(isinstance(s, SkillManager) for s in skills_input):
-                # Caso 2: Lista de SkillManagers -> Usar la unión (maneja la concatenación de instrucciones)
-                self.skill_manager = SkillManagerOperations.union(*skills_input)
-            elif all(callable(s) or isinstance(s, str) for s in skills_input):
-                # Caso 3: Lista de funciones -> Crear un manager y registrar funciones
-                self.skill_manager = SkillManager()
-                for skill_func in skills_input:
-                    self.skill_manager.register_skill(skill_func)
+        if isinstance(tools_input, AgentCapabilities):
+                    # Caso 1: Un solo AgentCapabilities -> Asignación directa
+                    self.capabilities = tools_input
+        elif isinstance(tools_input, list):
+            if all(isinstance(s, AgentCapabilities) for s in tools_input):
+                # Caso 2: Lista de AgentCapabilities -> Usar la unión
+                self.capabilities = CapabilitiesOperations.union(*tools_input)
+            elif all(callable(s) or isinstance(s, str) for s in tools_input):
+                # Caso 3: Lista de funciones -> Crear capabilities y registrar
+                self.capabilities = AgentCapabilities()
+                for tool_func in tools_input:
+                    self.capabilities.register_tool(tool_func)
             else:
                 # Caso 4: Lista mixta o no válida
                 raise TypeError(
-                    "Invalid skill list format. 'skills' must be a single SkillManager, "
-                    "a list of SkillManagers, or a list of functions/skill names (str). "
+                    "Invalid tools list format. 'tools' must be a single AgentCapabilities, "
+                    "a list of AgentCapabilities, or a list of functions/tool names (str). "
                     "Mixed types in the list are not allowed."
                 )
-        else: # skills is None
-                    # Caso 5: skills es None
-                self.skill_manager = SkillManager()
+        else: # tools is None
+                self.capabilities = AgentCapabilities()
 
         # Extracción y concatenación de instrucciones globales del SkillManager
         final_instructions = ""
-        #Obtenemos las instrucciones globales del SkillManager
-        if hasattr(self.skill_manager, 'get_global_instructions'):
-            final_instructions = self.skill_manager.get_global_instructions()
+        #Obtenemos las instrucciones globales de AgentCapabilities
+        if hasattr(self.capabilities, 'get_global_instructions'):
+            final_instructions = self.capabilities.get_global_instructions()
 
-        self.skill_instructions = ""
+        self.tool_instructions = ""
         if final_instructions and final_instructions.strip():
-            # Concatenamos las instrucciones con un titular que indica el inicio de las instrucciones
-            self.skill_instructions = f"""
+            self.tool_instructions = f"""
             ###################################
-            ## SKILLS AND TOOLS INSTRUCTIONS ##
+            ##       TOOLS INSTRUCTIONS       ##
             ###################################
 
             {final_instructions.strip()}"""
 
         self.adapter = self._create_adapter()
-        self.tool_calls = []  # For accumulating tool calls in streaming
         self.async_execution = False  # Default value, will be set in run method
-        self._ephemeral_skills = {}  # Temporary storage for ephemeral skills during run
         self._last_run: Optional[RunInfo] = None
 
     ##################################
@@ -282,64 +283,101 @@ class InstantNeo:
         """Returns the RunInfo from the most recent run() call."""
         return self._last_run
 
-    ##### Skill Management #####
+    @property
+    def skill_manager(self):
+        """Backward compatibility alias for self.capabilities."""
+        return self.capabilities
+
+    ##### Tool Management #####
     def mod_role(self,new_role):
         self.config.role_setup = new_role
         return
 
-    # Backward compatibility methods
-    def add_skill(self, skill: Callable):
-        """Deprecated. 
-        Used to register a skill in the SkillManager.
-        Use register_skill instead."""
-        return self.register_skill(skill)
+    # New canonical methods
+    def register_tool(self, tool_func: Callable) -> None:
+        """Register a tool in the AgentCapabilities."""
+        return self.capabilities.register_tool(tool_func)
 
-    def list_skills(self) -> List[str]:
-        """Deprecated.
-        Used to get the names of all registered skills.
-        Use get_skill_names instead."""
-        return self.get_skill_names()
+    def get_tool_names(self) -> List[str]:
+        """Get the names of all registered tools."""
+        return self.capabilities.get_tool_names()
 
-    # New methods
-    def register_skill(self, skill: Callable) -> None:
-        """Register a skill in the SkillManager."""
-        return self.skill_manager.register_skill(skill)
+    def get_tool_by_name(self, name: str) -> Union[Any, Dict[str, Any], None]:
+        """Get a tool by its name."""
+        return self.capabilities.get_tool_by_name(name)
 
-    def get_skill_names(self) -> List[str]:
-        """Get the names of all registered skills."""
-        return self.skill_manager.get_skill_names()
+    def get_tool_metadata_by_name(self, name: str) -> Dict[str, Any]:
+        """Get the metadata of a tool by its name."""
+        return self.capabilities.get_tool_metadata_by_name(name)
 
-    def get_skill_by_name(self, name: str) -> Union[Any, Dict[str, Any], None]:
-        """Get a skill by its name."""
-        return self.skill_manager.get_skill_by_name(name)
+    def get_tools_by_tag(self, tag: str, return_keys: bool = False) -> Union[List[str], Dict[str, Any]]:
+        """Get tools by tag."""
+        return self.capabilities.get_tools_by_tag(tag, return_keys)
 
-    def get_skill_metadata_by_name(self, name: str) -> Dict[str, Any]:
-        """Get the metadata of a skill by its name."""
-        return self.skill_manager.get_skill_metadata_by_name(name)
+    def get_all_tools_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Get the metadata of all tools."""
+        return self.capabilities.get_all_tools_metadata()
 
-    def get_skills_by_tag(self, tag: str, return_keys: bool = False) -> Union[List[str], Dict[str, Any]]:
-        """Get skills by tag."""
-        return self.skill_manager.get_skills_by_tag(tag, return_keys)
+    def get_duplicate_tools(self) -> Dict[str, List[Any]]:
+        """Get duplicate tools."""
+        return self.capabilities.get_duplicate_tools()
 
-    def get_all_skills_metadata(self) -> Dict[str, Dict[str, Any]]:
-        """Get the metadata of all skills."""
-        return self.skill_manager.get_all_skills_metadata()
+    def remove_tool(self, tool_name: str, module: Optional[str] = None) -> bool:
+        """Remove a tool by its name."""
+        return self.capabilities.remove_tool(tool_name, module)
 
-    def get_duplicate_skills(self) -> Dict[str, List[Any]]:
-        """Get duplicate skills."""
-        return self.skill_manager.get_duplicate_skills()
-
-    def remove_skill(self, skill_name: str, module: Optional[str] = None) -> bool:
-        """Remove a skill by its name."""
-        return self.skill_manager.remove_skill(skill_name, module)
-
-    def update_skill_metadata(self, key: str, new_metadata: Dict[str, Any]) -> bool:
-        """Update the metadata of a skill."""
-        return self.skill_manager.update_skill_metadata(key, new_metadata)
+    def update_tool_metadata(self, key: str, new_metadata: Dict[str, Any]) -> bool:
+        """Update the metadata of a tool."""
+        return self.capabilities.update_tool_metadata(key, new_metadata)
 
     def clear_registry(self) -> None:
-        """Clear the skill registry."""
-        return self.skill_manager.clear_registry()
+        """Clear the tool registry."""
+        return self.capabilities.clear_registry()
+
+    # Backward compatibility methods
+    def add_skill(self, skill: Callable):
+        """Deprecated. Use register_tool instead."""
+        return self.register_tool(skill)
+
+    def list_skills(self) -> List[str]:
+        """Deprecated. Use get_tool_names instead."""
+        return self.get_tool_names()
+
+    def register_skill(self, skill: Callable) -> None:
+        """Backward compat alias for register_tool."""
+        return self.register_tool(skill)
+
+    def get_skill_names(self) -> List[str]:
+        """Backward compat alias for get_tool_names."""
+        return self.get_tool_names()
+
+    def get_skill_by_name(self, name: str) -> Union[Any, Dict[str, Any], None]:
+        """Backward compat alias for get_tool_by_name."""
+        return self.get_tool_by_name(name)
+
+    def get_skill_metadata_by_name(self, name: str) -> Dict[str, Any]:
+        """Backward compat alias for get_tool_metadata_by_name."""
+        return self.get_tool_metadata_by_name(name)
+
+    def get_skills_by_tag(self, tag: str, return_keys: bool = False) -> Union[List[str], Dict[str, Any]]:
+        """Backward compat alias for get_tools_by_tag."""
+        return self.get_tools_by_tag(tag, return_keys)
+
+    def get_all_skills_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Backward compat alias for get_all_tools_metadata."""
+        return self.get_all_tools_metadata()
+
+    def get_duplicate_skills(self) -> Dict[str, List[Any]]:
+        """Backward compat alias for get_duplicate_tools."""
+        return self.get_duplicate_tools()
+
+    def remove_skill(self, skill_name: str, module: Optional[str] = None) -> bool:
+        """Backward compat alias for remove_tool."""
+        return self.remove_tool(skill_name, module)
+
+    def update_skill_metadata(self, key: str, new_metadata: Dict[str, Any]) -> bool:
+        """Backward compat alias for update_tool_metadata."""
+        return self.update_tool_metadata(key, new_metadata)
 
     def load_skills_from_file(self, file_path: str, metadata_filter: Optional[Callable[[Dict[str, Any]], bool]] = None) -> None:
         """Load skills from a file.
@@ -347,7 +385,7 @@ class InstantNeo:
         Args:
             file_path (str): The path to the file.
             metadata_filter (Optional[Callable[[Dict[str, Any]], bool]], optional): A function to filter skills by metadata. Defaults to None."""
-        return self.skill_manager._load_skills_from_file(file_path, metadata_filter)
+        return self.capabilities._load_skills_from_file(file_path, metadata_filter)
 
     def load_skills_from_current(self,
                                  metadata_filter: Optional[Callable[[Dict[str, Any]], bool]] = None) -> None:
@@ -355,7 +393,7 @@ class InstantNeo:
 
         Args:
             metadata_filter (Optional[Callable[[Dict[str, Any]], bool]], optional): A function to filter skills by metadata. Defaults to None."""
-        return self.skill_manager._load_skills_from_current_module(metadata_filter)
+        return self.capabilities._load_skills_from_current_module(metadata_filter)
     
     def load_skills_from_folder(self, folder_path: str, metadata_filter: Optional[Callable[[Dict[str, Any]], bool]] = None) -> None:
         """Load skills from a folder.
@@ -363,7 +401,7 @@ class InstantNeo:
         Args:
             folder_path (str): The path to the folder.
             metadata_filter (Optional[Callable[[Dict[str, Any]], bool]], optional): A function to filter skills by metadata. Defaults to None."""
-        return self.skill_manager._load_skills_from_folder(folder_path, metadata_filter)
+        return self.capabilities._load_skills_from_folder(folder_path, metadata_filter)
 
 
 
@@ -374,9 +412,9 @@ class InstantNeo:
         Combines the skills of this SkillManager with other SkillManagers or InstantNeo Agents,
         replacing the internal skills with the union of both.
         """
-        from instantneo.skills.skill_manager_operations import SkillManagerOperations  # Import here to avoid circular dependency
+        from instantneo.skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations  # backward compat
         # Inicializar con el propio SkillManager
-        managers_para_union = [self.skill_manager]
+        managers_para_union = [self.capabilities]
         for manager_or_neo in otros_managers:
             if isinstance(manager_or_neo, InstantNeo):
                 # Usar el SkillManager interno de InstantNeo
@@ -384,16 +422,16 @@ class InstantNeo:
             else:
                 # Usar SkillManager directamente
                 managers_para_union.append(manager_or_neo)
-        self.skill_manager = SkillManagerOperations.union(*managers_para_union)
+        self.capabilities = CapabilitiesOperations.union(*managers_para_union)
 
     def sm_ops_intersection(self, *otros_managers) -> None:
         """
         Performs the intersection of skills with other SkillManagers or InstantNeos,
         replacing the internal skills with the intersection of both.
         """
-        from instantneo.skills.skill_manager_operations import SkillManagerOperations  # Import here to avoid circular dependency
+        from instantneo.skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations  # backward compat
         # Inicializar con el propio SkillManager
-        managers_para_interseccion = [self.skill_manager]
+        managers_para_interseccion = [self.capabilities]
         for manager_or_neo in otros_managers:
             if isinstance(manager_or_neo, InstantNeo):
                 # Usar el SkillManager interno de InstantNeo
@@ -401,7 +439,7 @@ class InstantNeo:
             else:
                 # Usar SkillManager directamente
                 managers_para_interseccion.append(manager_or_neo)
-        self.skill_manager = SkillManagerOperations.intersection(
+        self.capabilities = SkillManagerOperations.intersection(
             *managers_para_interseccion)
 
     def sm_ops_difference(self, exclude_manager) -> None:
@@ -409,7 +447,7 @@ class InstantNeo:
         Calculates the difference of skills with another SkillManager or InstantNeo,
         replacing the internal skills with those that are in this agent but not in the other.
         """
-        from instantneo.skills.skill_manager_operations import SkillManagerOperations  # Import here to avoid circular dependency
+        from instantneo.skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations  # backward compat
 
         if isinstance(exclude_manager, InstantNeo):
             # Usar el SkillManager interno de InstantNeo
@@ -417,15 +455,15 @@ class InstantNeo:
         else:
             exclude_skill_manager = exclude_manager  # Usar SkillManager directamente
 
-        self.skill_manager = SkillManagerOperations.difference(
-            self.skill_manager, exclude_skill_manager)
+        self.capabilities = SkillManagerOperations.difference(
+            self.capabilities, exclude_skill_manager)
 
     def sm_ops_symmetric_difference(self, otro_manager) -> None:
         """
         Calculates the symmetric difference of skills with another SkillManager or InstantNeo,
         replacing the internal skills with the symmetric difference of both. That is, skills that are in this agent or in the incoming one, but NOT in both.
         """
-        from instantneo.skills.skill_manager_operations import SkillManagerOperations  # Import here to avoid circular dependency
+        from instantneo.skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations  # backward compat
 
         if isinstance(otro_manager, InstantNeo):
             # Usar el SkillManager interno de InstantNeo
@@ -433,22 +471,22 @@ class InstantNeo:
         else:
             otro_skill_manager = otro_manager  # Usar SkillManager directamente
 
-        self.skill_manager = SkillManagerOperations.symmetric_difference(
-            self.skill_manager, otro_skill_manager)
+        self.capabilities = SkillManagerOperations.symmetric_difference(
+            self.capabilities, otro_skill_manager)
 
     def sm_ops_compare(self, otro_manager: Union["SkillManager", "InstantNeo"]) -> Dict[str, set[str]]:
         """
         Compares the SkillManager internal with another SkillManager or InstantNeo and returns
 a dictionary with common and unique skills. It does not modify the internal skills.
         """
-        from instantneo.skills.skill_manager_operations import SkillManagerOperations  # Import here to avoid circular dependency
+        from instantneo.skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations  # backward compat
         if isinstance(otro_manager, InstantNeo):
             # Usar el SkillManager interno de InstantNeo
             otro_skill_manager = otro_manager.skill_manager
         else:
             otro_skill_manager = otro_manager  # Usar SkillManager directamente
 
-        return SkillManagerOperations.compare(self.skill_manager, otro_skill_manager)
+        return SkillManagerOperations.compare(self.capabilities, otro_skill_manager)
 
     def run(
         self,
@@ -456,8 +494,8 @@ a dictionary with common and unique skills. It does not modify the internal skil
         execution_mode: str = "wait_response",
         async_execution: bool = False,
         return_full_response: bool = False,
-        skills: Optional[List[str]] = None,
-        context: Optional[List[str]] = None,
+        tools: Optional[List[str]] = None,
+        skills: Optional[List[str]] = None,  # backward compat alias for tools
         images: Optional[Union[str, List[str]]] = None,
         image_detail: Optional[str] = None,
         stream: bool = False,
@@ -467,15 +505,13 @@ a dictionary with common and unique skills. It does not modify the internal skil
 
 Args:
     prompt (str): The prompt to run.
-    execution_mode (str, optional): The skill execution mode. Defaults to "wait_response".
-        - "wait_response": Waits for the skill's response.
-        - "execution_only": Executes the skill without waiting for the response.
-        - "get_args": Gets the skill's name and arguments without executing it, for later use.
-    async_execution (bool, optional): Asynchronous skill execution. Defaults to False.
+    execution_mode (str, optional): The tool execution mode. Defaults to "wait_response".
+        - "wait_response": Waits for the tool's response.
+        - "execution_only": Executes the tool without waiting for the response.
+        - "get_args": Gets the tool's name and arguments without executing it, for later use.
+    async_execution (bool, optional): Asynchronous tool execution. Defaults to False.
     return_full_response (bool, optional): Returns the provider's full response. Defaults to False.
-    skills (List[str], optional): The skills to use in this run; if not provided, the instance's configured skills are used.
-    context (List[str], optional): Ephemeral context from shelf items. These items' instructions
-        and tools are included ONLY for this run. Use for on-demand knowledge injection.
+    tools (List[str], optional): The tools to use in this run; if not provided, the instance's configured tools are used.
     images (Optional[Union[str, List[str]]], optional): Images to use in this run.
     image_detail (Optional[str], optional): Detail of the images to use in this run.
     stream (bool, optional): Enable response streaming.
@@ -492,10 +528,12 @@ Args:
             - seed (Optional[int], optional): Seed for reproducibility.
         """
 
-        # Determine which skills to use
-        skills_to_use = skills if skills is not None else [name for name in self.get_skill_names()] 
+        # Accept skills= as backward compat alias for tools=
+        if skills is not None and tools is None:
+            tools = skills
 
-        # print(f"Skills to be used in this run: {skills_to_use}")
+        # Determine which tools to use
+        tools_to_use = tools if tools is not None else [name for name in self.get_tool_names()]
 
         # Create RunParams with explicit parameters
         run_params = RunParams(
@@ -507,7 +545,7 @@ Args:
             execution_mode=execution_mode,
             async_execution=async_execution,
             return_full_response=return_full_response,
-            skills=skills_to_use,
+            tools=tools_to_use,
             temperature=additional_params.get('temperature') if additional_params.get(
                 'temperature') is not None else self.config.temperature,
             max_tokens=additional_params.get('max_tokens') if additional_params.get(
@@ -538,45 +576,15 @@ Args:
 
         self.async_execution = run_params.async_execution
 
-        active_skills = self._get_active_skills(skills_to_use)
-        #print(f"Active skills for this run: {list(active_skills.keys())}")
+        active_tools = self._get_active_tools(tools_to_use)
 
         # ═══════════════════════════════════════════════════════
-        # SHELF CONTEXT: Persistente + Efímero
+        # SHELF CONTEXT (from activated items)
         # ═══════════════════════════════════════════════════════
 
-        # 1. Contexto persistente (items activados en el shelf)
-        shelf_context = ""
-        if hasattr(self.skill_manager, 'get_active_context'):
-            shelf_context = self.skill_manager.get_active_context()
-
-        # 2. Contexto efímero (items pasados en context=[...])
-        ephemeral_context = ""
-        ephemeral_skills = {}
-
-        if context and hasattr(self.skill_manager, 'get_item_context'):
-            for item_name in context:
-                # Obtener contexto del item
-                item_ctx = self.skill_manager.get_item_context(item_name)
-                if item_ctx:
-                    ephemeral_context += f"\n\n{item_ctx}"
-
-                # Obtener skills del item
-                if hasattr(self.skill_manager, 'get_item_skills'):
-                    item_skills = self.skill_manager.get_item_skills(item_name)
-                    ephemeral_skills.update(item_skills)
-
-        # 3. Combinar contextos
         combined_context = ""
-        if shelf_context or ephemeral_context:
-            combined_context = shelf_context + ephemeral_context
-
-        # 4. Agregar skills efímeros a active_skills y guardar referencia
-        if ephemeral_skills:
-            active_skills.update(ephemeral_skills)
-            self._ephemeral_skills = ephemeral_skills  # Para que _execute_skill los encuentre
-        else:
-            self._ephemeral_skills = {}  # Limpiar de runs anteriores
+        if hasattr(self.capabilities, 'get_active_context'):
+            combined_context = self.capabilities.get_active_context()
 
         image_config = self._get_image_config(run_params)
 
@@ -584,20 +592,15 @@ Args:
 
         adapter_params = AdapterParams.from_run_params(run_params, messages)
 
-        if active_skills:
+        if active_tools:
             formatted_tools = []
-            for name, skill_func in active_skills.items():
-                # Primero intentar obtener del registry (skills persistentes)
-                skill_info = self.get_skill_metadata_by_name(name)
+            for name, tool_func in active_tools.items():
+                tool_info = self.get_tool_metadata_by_name(name)
 
-                # Si no está en registry, obtener directamente del skill (efímeros)
-                if skill_info is None and hasattr(skill_func, 'skill_metadata'):
-                    skill_info = skill_func.skill_metadata
-
-                if skill_info and 'parameters' in skill_info:
-                    formatted_tools.append(format_tool(skill_info))
+                if tool_info and 'parameters' in tool_info:
+                    formatted_tools.append(format_tool(tool_info))
                 else:
-                    print(f"Warning: Skill '{name}' is missing metadata or 'parameters'. Skipping.")
+                    print(f"Warning: Tool '{name}' is missing metadata or 'parameters'. Skipping.")
 
             if formatted_tools:
                 adapter_params.additional_params['tools'] = formatted_tools
@@ -651,25 +654,25 @@ Args:
     #        PRIVATE METHODS        #
     #################################
 
-    def _get_active_skills(self, skills: Optional[List[str]] = None) -> Dict[str, Callable]:
-        """Get active skills based on the provided skill names."""
-        active_skills = {}
-        if skills is None:
-            return active_skills
+    def _get_active_tools(self, tools: Optional[List[str]] = None) -> Dict[str, Callable]:
+        """Get active tools based on the provided tool names."""
+        active_tools = {}
+        if tools is None:
+            return active_tools
 
-        if isinstance(skills, SkillManager):
-            skills = skills.get_skill_names()
+        if isinstance(tools, AgentCapabilities):
+            tools = tools.get_tool_names()
 
-        for skill_name in skills:
-            skill = self.get_skill_by_name(skill_name)
-            if isinstance(skill, dict):
-                skill = next(iter(skill.values()))
-            if skill:
-                active_skills[skill_name] = skill
+        for tool_name in tools:
+            tool_func = self.get_tool_by_name(tool_name)
+            if isinstance(tool_func, dict):
+                tool_func = next(iter(tool_func.values()))
+            if tool_func:
+                active_tools[tool_name] = tool_func
             else:
-                print(f"Warning: Skill '{skill_name}' not found in SkillManager.")
+                print(f"Warning: Tool '{tool_name}' not found in AgentCapabilities.")
 
-        return active_skills
+        return active_tools
 
     def _get_image_config(self, run_params: RunParams) -> Optional[ImageConfig]:
         """Get image configuration from run parameters."""
@@ -702,9 +705,9 @@ Args:
         messages = []
         final_role_setup = self.config.role_setup
 
-        # 1. Agregar skill instructions (existente)
-        if hasattr(self, 'skill_instructions') and self.skill_instructions:
-            final_role_setup = f"{self.config.role_setup}{self.skill_instructions}"
+        # 1. Agregar tool instructions
+        if hasattr(self, 'tool_instructions') and self.tool_instructions:
+            final_role_setup = f"{self.config.role_setup}{self.tool_instructions}"
 
         # 2. Agregar shelf context (persistente + efímero)
         if shelf_context:
@@ -747,7 +750,10 @@ Args:
         if tool_calls:
             print(f'{"*" * 40}\n* {"I am using my skills. Wait for it...":^36} *\n{"*" * 40}\n')
             results = self._handle_tool_calls(tool_calls, execution_mode, run_info)
-            return results
+            return {
+                "text": content if content else None,
+                "tool_results": results
+            }
         else:
             return content
 
@@ -763,11 +769,11 @@ Args:
                 function_args = json.loads(tool_call.function.arguments)
                 #print(f"Llamando a la función: {function_name} con argumentos: {function_args}")
 
-                if function_name in self.get_skill_names():
-                    skill = self.get_skill_by_name(function_name)
+                if function_name in self.get_tool_names():
+                    tool_func = self.get_tool_by_name(function_name)
 
-                    # Track skill execution
-                    skill_exec = SkillExecution(
+                    # Track tool execution
+                    tool_exec = ToolExecution(
                         name=function_name,
                         arguments=function_args,
                         execution_mode=execution_mode,
@@ -775,43 +781,42 @@ Args:
 
                     if execution_mode == self.EXECUTION_ONLY:
                         try:
-                            result = self._execute_skill(
+                            result = self._execute_tool(
                                 function_name, function_args)
-                            skill_exec.result = result
+                            tool_exec.result = result
                         except Exception as e:
-                            skill_exec.exception = str(e)
+                            tool_exec.exception = str(e)
                             raise
                         if self.async_execution:
                             futures.append(result)
-                        #print(f"Función {function_name} ejecutada usando EXECUTION_ONLY (async_execution={self.async_execution})")
                     elif execution_mode == self.GET_ARGS:
-                        skill_exec.result = {"name": function_name, "arguments": function_args}
+                        tool_exec.result = {"name": function_name, "arguments": function_args}
                         results.append(
                             {"name": function_name, "arguments": function_args})
                     else:  # WAIT_RESPONSE
                         if self.async_execution:
                             try:
-                                result = self._execute_skill(
+                                result = self._execute_tool(
                                     function_name, function_args)
-                                skill_exec.result = result
+                                tool_exec.result = result
                                 results.append(result)
                             except Exception as e:
-                                skill_exec.exception = str(e)
+                                tool_exec.exception = str(e)
                                 raise
                         else:
                             try:
-                                result = self._execute_skill(
+                                result = self._execute_tool(
                                     function_name, function_args)
-                                skill_exec.result = result
+                                tool_exec.result = result
                                 results.append(result)
                             except Exception as e:
-                                skill_exec.exception = str(e)
+                                tool_exec.exception = str(e)
                                 raise
 
                     if run_info:
-                        run_info.skill_executions.append(skill_exec)
+                        run_info.tool_executions.append(tool_exec)
                 else:
-                    print(f"Función {function_name} no encontrada en las skills disponibles")
+                    print(f"Warning: Tool '{function_name}' not found in available tools.")
 
         # Si estamos en modo WAIT_RESPONSE y async_execution=True, ejecutamos todas las corrutinas
         # de manera síncrona para esperar los resultados
@@ -863,27 +868,18 @@ Args:
         else:  # WAIT_RESPONSE
             return results[0] if len(results) == 1 else results
 
-    def _execute_skill(self, skill_name: str, arguments: Dict[str, Any]):
-        """Execute a skill with the given arguments."""
-        # Primero buscar en registry (persistentes)
-        skill = self.get_skill_by_name(skill_name)
+    def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]):
+        """Execute a tool with the given arguments."""
+        tool_func = self.get_tool_by_name(tool_name)
 
-        # Si no está en registry, buscar en ephemeral_skills
-        if skill is None and hasattr(self, '_ephemeral_skills') and skill_name in self._ephemeral_skills:
-            skill = self._ephemeral_skills[skill_name]
-
-        if skill is None:
-            raise ValueError(f"Skill not found: {skill_name}")
-        #print(f"DEBUG: _execute_skill llamado para {skill_name} con async_execution={self.async_execution}")
+        if tool_func is None:
+            raise ValueError(f"Tool not found: {tool_name}")
         if self.async_execution:
-            #print(f"ASYNC_EXECUTION: Preparando {skill_name} para ejecución asíncrona")
-            # Solo preparamos la función para ejecución asíncrona, no la ejecutamos todavía
             loop = asyncio.get_event_loop()
-            return loop.run_in_executor(None, lambda skill, arguments: (next(iter(skill.values())) if isinstance(skill, dict) else skill)(**arguments), skill, arguments)
+            return loop.run_in_executor(None, lambda tf, args: (next(iter(tf.values())) if isinstance(tf, dict) else tf)(**args), tool_func, arguments)
         else:
-            #print(f"SYNC_EXECUTION: Ejecutando {skill_name} de forma síncrona")
-            skill = next(iter(skill.values())) if isinstance(skill, dict) else skill
-            return skill(**arguments)
+            tool_func = next(iter(tool_func.values())) if isinstance(tool_func, dict) else tool_func
+            return tool_func(**arguments)
 
     def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, start_time: float):
         """Handle streaming responses from the language model."""
@@ -962,22 +958,21 @@ Args:
         # Procesamos las herramientas según el modo de ejecución
         if tool_calls:
             if execution_mode == self.EXECUTION_ONLY:
-                #print(f"DEBUG: En streaming, usando _execute_skill con async_execution={self.async_execution}")
                 futures = []
                 for tool_call in tool_calls:
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
-                    skill_exec = SkillExecution(
+                    tool_exec = ToolExecution(
                         name=function_name,
                         arguments=function_args,
                         execution_mode=execution_mode,
                     )
                     try:
-                        result = self._execute_skill(function_name, function_args)
-                        skill_exec.result = result
+                        result = self._execute_tool(function_name, function_args)
+                        tool_exec.result = result
                     except Exception as e:
-                        skill_exec.exception = str(e)
-                    run_info.skill_executions.append(skill_exec)
+                        tool_exec.exception = str(e)
+                    run_info.tool_executions.append(tool_exec)
                     if self.async_execution:
                         futures.append(result)
 
@@ -999,18 +994,24 @@ Args:
                     except Exception as e:
                         print(f"Error al ejecutar corrutinas en streaming: {e}")
 
-                yield "Todas las funciones se han ejecutado en segundo plano."
+                yield {
+                    "text": full_response if full_response else None,
+                    "tool_results": "Todas las funciones se han ejecutado en segundo plano."
+                }
             elif execution_mode == self.GET_ARGS:
                 for tool_call in tool_calls:
                     if hasattr(tool_call, 'function'):
-                        skill_exec = SkillExecution(
+                        tool_exec = ToolExecution(
                             name=tool_call.function.name,
                             arguments=json.loads(tool_call.function.arguments) if isinstance(tool_call.function.arguments, str) else tool_call.function.arguments,
                             execution_mode=execution_mode,
                             result={"name": tool_call.function.name, "arguments": tool_call.function.arguments},
                         )
-                        run_info.skill_executions.append(skill_exec)
-                yield tool_calls
+                        run_info.tool_executions.append(tool_exec)
+                yield {
+                    "text": full_response if full_response else None,
+                    "tool_results": tool_calls
+                }
             elif execution_mode == self.WAIT_RESPONSE and tool_calls:
                 # Para WAIT_RESPONSE, ejecutamos las herramientas y devolvemos los resultados
                 #print(f"DEBUG: En streaming, procesando herramientas en modo WAIT_RESPONSE con async_execution={self.async_execution}")
@@ -1023,33 +1024,33 @@ Args:
                         function_args = json.loads(
                             tool_call.function.arguments)
 
-                        skill_exec = SkillExecution(
+                        tool_exec = ToolExecution(
                             name=function_name,
                             arguments=function_args,
                             execution_mode=execution_mode,
                         )
 
-                        if function_name in self.get_skill_names():
+                        if function_name in self.get_tool_names():
                             if self.async_execution:
                                 try:
-                                    result = self._execute_skill(
+                                    result = self._execute_tool(
                                         function_name, function_args)
-                                    skill_exec.result = result
+                                    tool_exec.result = result
                                     futures.append(result)
                                 except Exception as e:
-                                    skill_exec.exception = str(e)
+                                    tool_exec.exception = str(e)
                             else:
                                 try:
-                                    result = self._execute_skill(
+                                    result = self._execute_tool(
                                         function_name, function_args)
-                                    skill_exec.result = result
+                                    tool_exec.result = result
                                     results.append(result)
                                 except Exception as e:
-                                    skill_exec.exception = str(e)
+                                    tool_exec.exception = str(e)
                         else:
-                            print(f"Función {function_name} no encontrada en las skills disponibles")
+                            print(f"Warning: Tool '{function_name}' not found in available tools.")
 
-                        run_info.skill_executions.append(skill_exec)
+                        run_info.tool_executions.append(tool_exec)
 
 
                 # Si hay futures pendientes, esperamos a que terminen
@@ -1077,7 +1078,11 @@ Args:
 
                 # Devolvemos los resultados
                 if results:
-                    yield results[0] if len(results) == 1 else results
+                    tool_results = results[0] if len(results) == 1 else results
+                    yield {
+                        "text": full_response if full_response else None,
+                        "tool_results": tool_results
+                    }
 
         if return_full_response:
             yield {

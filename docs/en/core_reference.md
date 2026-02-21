@@ -9,8 +9,8 @@ InstantNeo provides a unified interface for creating AI agents that can interact
 An InstantNeo agent consists of:
 
 1. **Base Configuration**: Defined when you create an instance, including the LLM provider, model, system prompt, and default parameters.
-2. **Skills Registry**: Functions that the agent can call to perform specific tasks.
-3. **Execution Engine**: Handles communication with the LLM and executes skills as needed.
+2. **Tools Registry**: Functions that the agent can call to perform specific tasks.
+3. **Execution Engine**: Handles communication with the LLM and executes tools as needed.
 
 ### Instance and Run Relationship
 
@@ -28,7 +28,7 @@ InstantNeo(
     api_key: str,
     model: str,
     role_setup: str,
-    skills: Optional[Union[List[str], SkillManager]] = None,
+    skills: Optional[Union[List[Callable], AgentCapabilities]] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = 200,
     presence_penalty: Optional[float] = None,
@@ -57,7 +57,7 @@ Creating an InstantNeo instance gives you several advantages:
 
 1. **Agent Reusability**: Configure once, use many times with different prompts
 2. **Consistent Identity**: Maintain a consistent role and behavior across interactions
-3. **Skill Management**: Register skills once and use them across multiple prompts
+3. **Tool Management**: Register tools once and use them across multiple prompts
 4. **Default Settings**: Set sensible defaults for model parameters
 
 ### Example: Creating Different Agent Types
@@ -128,19 +128,19 @@ When you call `run()`, several important things happen:
    - Then applies any overrides you've specified in the `run()` call
    - This allows flexibility while maintaining consistent defaults
 
-2. **Skills Selection**:
-   - If you specify `skills`, only those skills are available for this specific run
-   - If not, all skills registered with the agent are available
+2. **Tools Selection**:
+   - If you specify `skills`, only those tools are available for this specific run
+   - If not, all tools registered with the agent are available
    - This allows you to control exactly which capabilities are available for each run
 
 3. **Message Preparation**:
    - The system prompt (role_setup) is sent to the model with your prompt
    - Any images are processed and added to the message
-   - Skills are formatted for the LLM to understand
+   - Tools are formatted for the LLM to understand
 
 4. **LLM Interaction**:
    - The prepared message is sent to the appropriate LLM provider
-   - Responses are processed according to the execution mode
+   - Responses are processed according to the execution mode, executing tools as needed
    - Results are returned in the requested format
 
 ### Why Adjust Parameters at Runtime?
@@ -148,16 +148,16 @@ When you call `run()`, several important things happen:
 The ability to override parameters at run time gives InstantNeo exceptional flexibility:
 
 1. **Task-Specific Configurations**: Adjust temperature, tokens, etc. based on the specific task
-2. **Selective Skill Usage**: Only expose the skills needed for a specific query
+2. **Selective Tool Usage**: Only expose the tools needed for a specific query
 3. **Dynamic Content**: Include different images or additional context as needed
-4. **Execution Control**: Choose how skills are executed based on the use case
+4. **Execution Control**: Choose how tools are executed based on the use case
 
 ### Key Run Parameters
 
 - **prompt**: The instruction, user's input or query
-- **execution_mode**: How skills should be executed (`wait_response`, `execution_only`, or `get_args`)
-- **async_execution**: Whether to execute skills asynchronously
-- **skills**: List of skill names to make available for this run (overrides instance defaults)
+- **execution_mode**: How tools should be executed (`wait_response`, `execution_only`, or `get_args`)
+- **async_execution**: Whether to execute tools asynchronously
+- **skills**: List of tool names to make available for this run (overrides instance defaults)
 - **images**: Images to include with this specific prompt
 - **stream**: Whether to stream the response in chunks
 
@@ -170,10 +170,10 @@ The ability to override parameters at run time gives InstantNeo exceptional flex
 response = agent.run("What is the capital of France?")
 print(response)
 
-# With specific skills enabled
+# With specific tools enabled
 response = agent.run(
     prompt="What's 125 + 437?",
-    skills=["add"]  # Only make the add skill available
+    skills=["add"]  # Only make the add tool available
 )
 ```
 
@@ -240,7 +240,7 @@ context_response = agent.run(
 #### Different Execution Modes
 
 ```python
-# Wait for response (default) - blocks until skill execution completes
+# Wait for response (default) - blocks until tool execution completes
 result = agent.run(
     prompt="Calculate the area of a circle with radius 5",
     skills=["circle_area"],
@@ -248,7 +248,7 @@ result = agent.run(
 )
 print(f"The area is: {result}")
 
-# Execute without waiting - fires the skill and continues immediately
+# Execute without waiting - fires the tool and continues immediately
 agent.run(
     prompt="Log this user activity in the database",
     skills=["log_activity"],
@@ -279,7 +279,7 @@ for chunk in agent.run(
 
 ## Other Key Methods in InstantNeo
 
-InstantNeo provides several other important methods beyond `run()`. Here's a brief overview of the most commonly used ones:
+InstantNeo provides several other important methods beyond `run()`. Here is a brief overview of the most commonly used ones:
 
 ### Modifying Agent Behavior
 
@@ -293,18 +293,18 @@ agent.mod_role("You are now a mathematics tutor focused on explaining concepts s
 
 **Utility**: Allows you to repurpose an existing agent for a different role without creating a new instance.
 
-### Skill Management
+### Tool Management
 
-These methods help manage the skills available to the agent. A more detailed guide on skills will be provided separately.
+These methods help manage the tools available to the agent. A more detailed guide on tools will be provided separately.
 
-#### register_skill
+#### register_tool
 
-Adds a skill to the agent's available skills.
+Adds a tool to the agent's available tools.
 
 ```python
-from instantneo.skills import skill
+from instantneo.skills import tool
 
-@skill(
+@tool(
     description="Calculate the area of a circle",
     parameters={"radius": "The radius of the circle"}
 )
@@ -312,21 +312,21 @@ def circle_area(radius: float) -> float:
     import math
     return math.pi * radius**2
 
-agent.register_skill(circle_area)
+agent.register_tool(circle_area)
 ```
 
 **Utility**: Expands the agent's capabilities with new functions it can call.
 
-#### get_skill_names
+#### get_tool_names
 
-Lists all the registered skill names.
+Lists all the registered tool names.
 
 ```python
-available_skills = agent.get_skill_names()
-print(f"Available skills: {available_skills}")
+available_tools = agent.get_tool_names()
+print(f"Available tools: {available_tools}")
 ```
 
-**Utility**: Useful for debugging or dynamically selecting skills to use in a run.
+**Utility**: Useful for debugging or dynamically selecting tools to use in a run.
 
 #### load_skills_from_file, load_skills_from_folder
 
@@ -342,19 +342,19 @@ agent.load_skills_from_folder("./skills_library")
 
 **Utility**: Allows modular organization of skills and loading them as needed.
 
-### Skill Manager Operations
+### Capabilities Operations
 
-These methods provide set operations for managing skill collections. They'll be covered in more detail in the dedicated skills guide.
+These methods provide set operations for managing tool collections. They will be covered in more detail in the dedicated tools guide.
 
 ```python
-# Combine skills from another agent
+# Combine tools from another agent
 agent1.sm_ops_union(agent2)
 
-# Keep only skills that exist in both agents
+# Keep only tools that exist in both agents
 agent1.sm_ops_intersection(agent2)
 
-# Compare skill sets
+# Compare tool sets
 comparison = agent1.sm_ops_compare(agent2)
 ```
 
-**Utility**: Enables sophisticated management of skill collections between agents.
+**Utility**: Enables sophisticated management of tool collections between agents.

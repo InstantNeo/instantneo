@@ -8,7 +8,7 @@ pip install instantneo
 
 ## Creating a Simple Agent
 
-Let's start by creating a basic agent without any skills:
+Let's start by creating a basic agent without any tools:
 
 ```python
 from instantneo import InstantNeo
@@ -31,14 +31,14 @@ response = agent.run(
 print(response)
 ```
 
-## Creating a Simple Skill
+## Creating a Simple Tool
 
-Skills enable your agent to perform specific functions. Let's create a basic skill:
+Tools enable your agent to perform specific functions. Let's create a basic tool:
 
 ```python
-from instantneo.skills import skill
+from instantneo.skills import tool
 
-@skill(
+@tool(
     description="Add two numbers and return the result",
     parameters={
         "a": "First number to add",
@@ -52,23 +52,23 @@ def add(a: int, b: int) -> int:
 
 Notice that:
 
-- The `@skill` decorator adds metadata to the function
+- The `@tool` decorator adds metadata to the function
 - Type information comes from Python type hints (`: int`)
 - Parameter descriptions come from the `parameters` dictionary in the decorator
 - Docstrings are optional - the metadata in the decorator is sufficient
 
-## Adding Skills to Your Agent
+## Adding Tools to Your Agent
 
-Now let's add the skill to our agent:
+Now let's add the tool to our agent:
 
 ```python
-# Register the skill with the agent
-agent.register_skill(add)
+# Register the tool with the agent
+agent.register_tool(add)
 
-# Verify available skills
-print(f"Available skills: {agent.get_skill_names()}")
+# Verify available tools
+print(f"Available tools: {agent.get_tool_names()}")
 
-# Use the agent with the new skill
+# Use the agent with the new tool
 response = agent.run(
     prompt="I need to add 42 and 28, what's the result?"
 )
@@ -76,12 +76,12 @@ response = agent.run(
 print(response)
 ```
 
-## Creating Multiple Skills
+## Creating Multiple Tools
 
-Let's create a few more skills:
+Let's create a few more tools:
 
 ```python
-@skill(
+@tool(
     description="Check if a text contains a keyword",
     parameters={
         "text": "The text to search in",
@@ -92,7 +92,7 @@ Let's create a few more skills:
 def find_keyword(text: str, keyword: str) -> bool:
     return keyword.lower() in text.lower()
 
-@skill(
+@tool(
     description="Calculate the length of a text string",
     parameters={
         "text": "The input text"
@@ -102,28 +102,28 @@ def find_keyword(text: str, keyword: str) -> bool:
 def text_length(text: str) -> int:
     return len(text)
 
-# Register the new skills
-agent.register_skill(find_keyword)
-agent.register_skill(text_length)
+# Register the new tools
+agent.register_tool(find_keyword)
+agent.register_tool(text_length)
 ```
 
-## Controlling Which Skills Are Used
+## Controlling Which Tools Are Used
 
-You can control which skills are available for each run:
+You can control which tools are available for each run:
 
 ```python
-# Use only specific skills for a particular query
+# Use only specific tools for a particular query
 response = agent.run(
     prompt="How many characters are in the word 'Python'?",
-    skills=["text_length"]  # Only use the text_length skill for this query
+    skills=["text_length"]  # Only use the text_length tool for this query
 )
 
 print(response)
 
-# Use multiple specific skills
+# Use multiple specific tools
 response = agent.run(
     prompt="Is the word 'language' in this text: 'Python is a programming language'?",
-    skills=["find_keyword", "text_length"]  # Use these two skills
+    skills=["find_keyword", "text_length"]  # Use these two tools
 )
 ```
 
@@ -132,62 +132,62 @@ response = agent.run(
 InstantNeo supports three execution modes:
 
 ```python
-# Wait for skill execution and return results (default)
+# Wait for tool execution and return results (default)
 response = agent.run(
     prompt="Add 5 and 7",
     execution_mode="wait_response"
 )
 
-# Execute skills without waiting for results
+# Execute tools without waiting for results
 agent.run(
     prompt="Process this data in the background",
     execution_mode="execution_only"
 )
 
-# Just get the arguments without executing the skills
+# Just get the arguments without executing the tools
 args = agent.run(
     prompt="Add 10 and 20",
     execution_mode="get_args"
 )
-print(args)  # Will show the skill name and arguments
+print(args)  # Will show the tool name and arguments
 ```
 
-## Using SkillManager
+## Using AgentCapabilities
 
-For more organized skill management, use SkillManager:
+For more organized tool management, use AgentCapabilities:
 
 ```python
-from instantneo.skills import SkillManager
+from instantneo.skills import AgentCapabilities
 
-# Create specialized skill managers
-math_skills = SkillManager()
-text_skills = SkillManager()
+# Create specialized capabilities
+math_skills = AgentCapabilities()
+text_skills = AgentCapabilities()
 
-# Register skills in appropriate managers
-math_skills.register_skill(add)
-text_skills.register_skill(find_keyword)
-text_skills.register_skill(text_length)
+# Register tools in appropriate managers
+math_skills.register_tool(add)
+text_skills.register_tool(find_keyword)
+text_skills.register_tool(text_length)
 
-# Create agent with specific skills
+# Create agent with specific tools
 agent = InstantNeo(
     provider="openai",
     api_key="your_api_key",
     model="gpt-4",
     role_setup="You are a helpful assistant.",
-    skills=math_skills  # Initialize with math skills only
+    skills=math_skills  # Initialize with math tools only
 )
 
-# Later, combine skills from different managers
+# Later, combine tools from different capabilities
 agent.sm_ops_union(text_skills)
 
-# Compare skill sets
+# Compare tool sets
 comparison = agent.sm_ops_compare(math_skills)
-print(comparison)  # Shows common and unique skills
+print(comparison)  # Shows common and unique tools
 ```
 
-## Loading Skills Dynamically
+## Loading Tools Dynamically
 
-Load skills from files or folders:
+Load tools from files or folders:
 
 ```python
 # Load from a specific file
@@ -197,9 +197,9 @@ agent.load_skills_from_file("./my_skills.py")
 agent.load_skills_from_folder("./skills_library")
 
 # Load with filtering
-agent.skill_manager.load_skills.from_folder(
+agent.capabilities.load_skills.from_folder(
     "./skills_library", 
-    by_tags=["math"]  # Only load skills with this tag
+    by_tags=["math"]  # Only load tools with this tag
 )
 ```
 
@@ -234,7 +234,7 @@ response = agent.run(
 
 ## Asynchronous Execution
 
-Execute skills in the background:
+Execute tools in the background:
 
 ```python
 response = agent.run(
