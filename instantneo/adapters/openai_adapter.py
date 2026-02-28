@@ -31,6 +31,7 @@ from instantneo.fetchers.openai import (
     InputMessage,
     FunctionTool,
 )
+from instantneo.models.openai import ReasoningConfig
 
 
 class OpenAIAdapter(BaseAdapter):
@@ -71,6 +72,15 @@ class OpenAIAdapter(BaseAdapter):
             openai_tools = self._translate_tools(request.tools) if request.tools else None
             openai_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort", "summary"})
+                extra_params["reasoning"] = ReasoningConfig(
+                    effort=request.reasoning.get("effort", "medium"),
+                    summary=request.reasoning.get("summary"),
+                )
+
             # Llamar al fetcher
             response = self.client.create_completion(
                 model=request.model,
@@ -81,7 +91,7 @@ class OpenAIAdapter(BaseAdapter):
                 tools=openai_tools,
                 tool_choice=openai_tool_choice,
                 stream=False,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir respuesta OpenAI → formato estándar
@@ -108,6 +118,15 @@ class OpenAIAdapter(BaseAdapter):
             openai_tools = self._translate_tools(request.tools) if request.tools else None
             openai_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort", "summary"})
+                extra_params["reasoning"] = ReasoningConfig(
+                    effort=request.reasoning.get("effort", "medium"),
+                    summary=request.reasoning.get("summary"),
+                )
+
             # Llamar al fetcher con streaming
             stream = self.client.create_completion_stream(
                 model=request.model,
@@ -117,7 +136,7 @@ class OpenAIAdapter(BaseAdapter):
                 temperature=request.temperature,
                 tools=openai_tools,
                 tool_choice=openai_tool_choice,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir chunks
@@ -289,8 +308,9 @@ class OpenAIAdapter(BaseAdapter):
 
     def _translate_response(self, response) -> StandardResponse:
         """Traduce respuesta OpenAI al formato estándar."""
-        # Extraer contenido de texto y tool_calls del output
+        # Extraer contenido de texto, reasoning y tool_calls del output
         text_content = ""
+        reasoning_content = ""
         tool_calls = []
 
         if response.output:
@@ -308,6 +328,17 @@ class OpenAIAdapter(BaseAdapter):
                             if block_type == "output_text":
                                 block_text = getattr(content_block, 'text', None) or (content_block.get('text') if isinstance(content_block, dict) else None)
                                 text_content += block_text or ""
+                elif item_type == "reasoning":
+                    # Reasoning block — extract summary text
+                    summary = getattr(item, 'summary', None) or (item.get('summary') if isinstance(item, dict) else None)
+                    content_val = getattr(item, 'content', None) or (item.get('content') if isinstance(item, dict) else None)
+                    if summary:
+                        for s in summary:
+                            text = getattr(s, 'text', None) or (s.get('text') if isinstance(s, dict) else None)
+                            if text:
+                                reasoning_content += text
+                    elif content_val:
+                        reasoning_content += str(content_val)
                 elif item_type == "function_call":
                     # Tool call - obtener campos de forma segura
                     call_id = getattr(item, 'call_id', None) or (item.get('call_id') if isinstance(item, dict) else None)
@@ -329,6 +360,7 @@ class OpenAIAdapter(BaseAdapter):
         response_message = StandardResponseMessage(
             content=text_content if text_content else None,
             tool_calls=tool_calls if tool_calls else None,
+            reasoning=reasoning_content if reasoning_content else None,
         )
 
         # Construir choice estándar
@@ -371,7 +403,10 @@ class OpenAIAdapter(BaseAdapter):
         event_type = chunk.get("type", "")
 
         # Procesar diferentes tipos de eventos de OpenAI Responses API
-        if event_type == "response.output_text.delta":
+        if event_type == "response.reasoning_text.delta":
+            delta.reasoning = chunk.get("delta", "")
+
+        elif event_type == "response.output_text.delta":
             delta.content = chunk.get("delta", "")
 
         elif event_type == "response.function_call_arguments.delta":
@@ -411,7 +446,7 @@ class OpenAIAdapter(BaseAdapter):
             )
 
         # Si no hay contenido relevante, retornar None
-        if delta.content is None and delta.tool_calls is None and delta.finish_reason is None:
+        if delta.content is None and delta.tool_calls is None and delta.reasoning is None and delta.finish_reason is None:
             return None
 
         return StandardStreamChunk(

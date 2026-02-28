@@ -39,6 +39,7 @@ class Part:
     file_data: Optional[Dict[str, str]] = None    # {"mimeType": "...", "fileUri": "..."}
     function_call: Optional[Dict[str, Any]] = None  # {"name": "...", "args": {...}}
     function_response: Optional[Dict[str, Any]] = None  # {"name": "...", "response": {...}}
+    thought: Optional[bool] = None  # True if this part is a thinking/reasoning part
 
 
 @dataclass
@@ -88,6 +89,7 @@ class GenerationConfig:
     max_output_tokens: Optional[int] = None
     stop_sequences: Optional[List[str]] = None
     response_mime_type: Optional[str] = None
+    thinking_config: Optional[Dict[str, Any]] = None  # {"thinkingBudget": int}
 
 
 @dataclass

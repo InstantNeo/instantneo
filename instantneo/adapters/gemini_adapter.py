@@ -373,12 +373,22 @@ class GeminiAdapter(BaseAdapter):
             stop_sequences=request.stop,
         )
 
+        # Agregar thinking config si hay reasoning
+        if request.reasoning:
+            self._warn_unsupported_reasoning_keys(request.reasoning, {"effort", "budget_tokens"})
+            budget = request.reasoning.get("budget_tokens")
+            if not budget:
+                effort_map = {"low": 1024, "medium": 4096, "high": 10240}
+                budget = effort_map.get(request.reasoning.get("effort", "medium"), 4096)
+            config.thinking_config = {"thinkingBudget": budget}
+
         # Solo retornar si hay al menos un parámetro configurado
         if any([
             config.temperature is not None,
             config.top_p is not None,
             config.max_output_tokens is not None,
             config.stop_sequences,
+            getattr(config, 'thinking_config', None),
         ]):
             return config
         return None
@@ -391,12 +401,16 @@ class GeminiAdapter(BaseAdapter):
         """Traduce respuesta Gemini al formato estándar."""
         candidate = response.candidates[0]
 
-        # Extraer texto y function calls
+        # Extraer texto, reasoning y function calls
         text_content = ""
+        reasoning_content = ""
         tool_calls = []
 
         for i, part in enumerate(candidate.content.parts):
-            if part.text:
+            if getattr(part, 'thought', False) and part.text:
+                # Part with thought=True is reasoning content
+                reasoning_content += part.text
+            elif part.text:
                 text_content += part.text
             elif part.function_call:
                 # Gemini no genera IDs, creamos uno
@@ -409,6 +423,7 @@ class GeminiAdapter(BaseAdapter):
         response_message = StandardResponseMessage(
             content=text_content if text_content else None,
             tool_calls=tool_calls if tool_calls else None,
+            reasoning=reasoning_content if reasoning_content else None,
         )
 
         standard_choice = StandardChoice(
@@ -455,7 +470,10 @@ class GeminiAdapter(BaseAdapter):
         parts = content.get("parts", [])
 
         for part in parts:
-            if "text" in part:
+            if part.get("thought") and "text" in part:
+                # Thought part is reasoning content
+                delta.reasoning = (delta.reasoning or "") + part["text"]
+            elif "text" in part:
                 delta.content = (delta.content or "") + part["text"]
             elif "functionCall" in part:
                 # Tool call en streaming
@@ -481,7 +499,7 @@ class GeminiAdapter(BaseAdapter):
             )
 
         # Si no hay contenido relevante, retornar None
-        if delta.content is None and delta.tool_calls is None and delta.finish_reason is None:
+        if delta.content is None and delta.tool_calls is None and delta.reasoning is None and delta.finish_reason is None:
             return None
 
         return StandardStreamChunk(

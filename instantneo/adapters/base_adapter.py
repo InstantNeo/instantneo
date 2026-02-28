@@ -19,14 +19,41 @@ Arquitectura:
     API Externa
 """
 
+import warnings
 from abc import ABC, abstractmethod
-from typing import Iterator, Optional
+from typing import Dict, Iterator, Optional, Set
 
 from instantneo.models.standard import (
     StandardRequest,
     StandardResponse,
     StandardStreamChunk,
 )
+
+# Supported reasoning options per provider with human-readable descriptions
+_REASONING_OPTIONS: Dict[str, Dict[str, str]] = {
+    "cerebras": {
+        "effort": '"low" | "medium" | "high"',
+    },
+    "openai": {
+        "effort": '"low" | "medium" | "high"',
+        "summary": '"auto" | "concise" | "detailed"',
+    },
+    "anthropic": {
+        "effort": '"low" | "medium" | "high"',
+        "budget_tokens": "int (min 1024)",
+    },
+    "groq": {
+        "effort": '"low" | "medium" | "high"',
+    },
+    "gemini": {
+        "effort": '"low" | "medium" | "high"',
+        "budget_tokens": "int",
+    },
+    "vertexai": {
+        "effort": '"low" | "medium" | "high"',
+        "budget_tokens": "int",
+    },
+}
 
 
 class BaseAdapter(ABC):
@@ -121,6 +148,19 @@ class BaseAdapter(ABC):
         class_name = self.__class__.__name__
         return class_name.replace("Adapter", "").lower()
 
+    def _warn_unsupported_reasoning_keys(self, reasoning_config: dict, supported_keys: Set[str]) -> None:
+        """Warn about unsupported reasoning keys and describe available options."""
+        provider = self.get_provider_name()
+        unsupported = set(reasoning_config.keys()) - supported_keys
+        if unsupported:
+            opts = _REASONING_OPTIONS.get(provider, {})
+            opts_str = ", ".join(f'"{k}": {v}' for k, v in opts.items())
+            warnings.warn(
+                f"{provider} does not support reasoning option(s): {unsupported}. "
+                f"Supported options for {provider}: {{{opts_str}}}",
+                stacklevel=5,
+            )
+
     # =========================================================================
     # MÉTODOS LEGACY (compatibilidad hacia atrás)
     # =========================================================================
@@ -189,6 +229,7 @@ class BaseAdapter(ABC):
             tool_choice=tool_choice,
             stop=kwargs.get("stop"),
             seed=kwargs.get("seed"),
+            reasoning=kwargs.get("reasoning"),
         )
 
         return self.complete(request)
@@ -230,12 +271,13 @@ class BaseAdapter(ABC):
             temperature=kwargs.get("temperature"),
             stream=True,
             tools=tools,
+            reasoning=kwargs.get("reasoning"),
         )
 
-        # Para compatibilidad, el core espera strings o chunks
+        # Para compatibilidad, el core espera strings or chunks
+        # Yield full chunk objects so core can access reasoning deltas
         for chunk in self.complete_stream(request):
-            if chunk.delta.content:
-                yield chunk.delta.content
+            yield chunk
 
     def format_messages(self, messages):
         """LEGACY: Método de compatibilidad. Ya no se usa en la nueva arquitectura."""
