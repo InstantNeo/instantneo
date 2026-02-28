@@ -78,6 +78,16 @@ class AnthropicAdapter(BaseAdapter):
             # max_tokens es requerido en Anthropic
             max_tokens = request.max_tokens or self.DEFAULT_MAX_TOKENS
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort", "budget_tokens"})
+                budget = request.reasoning.get("budget_tokens")
+                if not budget:
+                    effort_map = {"low": 1024, "medium": 4096, "high": 10240}
+                    budget = effort_map.get(request.reasoning.get("effort", "medium"), 4096)
+                extra_params["thinking"] = {"type": "enabled", "budget_tokens": budget}
+
             # Llamar al fetcher
             response = self.client.create_message(
                 model=request.model,
@@ -90,7 +100,7 @@ class AnthropicAdapter(BaseAdapter):
                 tools=anthropic_tools,
                 tool_choice=anthropic_tool_choice,
                 stream=False,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir respuesta Anthropic → formato estándar
@@ -120,6 +130,16 @@ class AnthropicAdapter(BaseAdapter):
             # max_tokens es requerido en Anthropic
             max_tokens = request.max_tokens or self.DEFAULT_MAX_TOKENS
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort", "budget_tokens"})
+                budget = request.reasoning.get("budget_tokens")
+                if not budget:
+                    effort_map = {"low": 1024, "medium": 4096, "high": 10240}
+                    budget = effort_map.get(request.reasoning.get("effort", "medium"), 4096)
+                extra_params["thinking"] = {"type": "enabled", "budget_tokens": budget}
+
             # Llamar al fetcher con streaming
             stream = self.client.create_message_stream(
                 model=request.model,
@@ -131,7 +151,7 @@ class AnthropicAdapter(BaseAdapter):
                 stop_sequences=request.stop,
                 tools=anthropic_tools,
                 tool_choice=anthropic_tool_choice,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir chunks
@@ -297,12 +317,15 @@ class AnthropicAdapter(BaseAdapter):
 
     def _translate_response(self, response) -> StandardResponse:
         """Traduce respuesta Anthropic al formato estándar."""
-        # Extraer contenido de texto y tool_calls
+        # Extraer contenido de texto, reasoning y tool_calls
         text_content = ""
+        reasoning_content = ""
         tool_calls = []
 
         for block in response.content:
-            if block.type == "text":
+            if block.type == "thinking":
+                reasoning_content += getattr(block, 'thinking', '') or ''
+            elif block.type == "text":
                 text_content += block.text or ""
             elif block.type == "tool_use":
                 # Convertir tool_use a StandardToolCall
@@ -316,6 +339,7 @@ class AnthropicAdapter(BaseAdapter):
         response_message = StandardResponseMessage(
             content=text_content if text_content else None,
             tool_calls=tool_calls if tool_calls else None,
+            reasoning=reasoning_content if reasoning_content else None,
         )
 
         # Construir choice estándar (Anthropic no tiene choices, simulamos uno)
@@ -356,7 +380,9 @@ class AnthropicAdapter(BaseAdapter):
         # Procesar diferentes tipos de eventos de Anthropic
         if event_type == "content_block_delta":
             delta_data = chunk.get("delta", {})
-            if delta_data.get("type") == "text_delta":
+            if delta_data.get("type") == "thinking_delta":
+                delta.reasoning = delta_data.get("thinking")
+            elif delta_data.get("type") == "text_delta":
                 delta.content = delta_data.get("text")
             elif delta_data.get("type") == "input_json_delta":
                 # Tool call arguments
@@ -395,7 +421,7 @@ class AnthropicAdapter(BaseAdapter):
             )
 
         # Si no hay contenido relevante, retornar None
-        if delta.content is None and delta.tool_calls is None and delta.finish_reason is None:
+        if delta.content is None and delta.tool_calls is None and delta.reasoning is None and delta.finish_reason is None:
             return None
 
         return StandardStreamChunk(

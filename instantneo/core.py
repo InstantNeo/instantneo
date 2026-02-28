@@ -488,6 +488,33 @@ a dictionary with common and unique skills. It does not modify the internal skil
 
         return SkillManagerOperations.compare(self.capabilities, otro_skill_manager)
 
+    def _normalize_reasoning(self, reasoning) -> Optional[Dict[str, Any]]:
+        """Normalize the reasoning parameter to a standard dict format.
+
+        Args:
+            reasoning: Can be None, False, True, a string (effort level), or a dict.
+
+        Returns:
+            None or a dict with at least {"effort": str}
+        """
+        if reasoning is None or reasoning is False:
+            return None
+        if reasoning is True:
+            return {"effort": "medium"}
+        if isinstance(reasoning, str):
+            valid = ("low", "medium", "high")
+            if reasoning not in valid:
+                import warnings
+                warnings.warn(
+                    f"Invalid reasoning effort '{reasoning}'. Valid values: {valid}. Falling back to 'medium'.",
+                    stacklevel=3,
+                )
+                return {"effort": "medium"}
+            return {"effort": reasoning}
+        if isinstance(reasoning, dict):
+            return reasoning
+        raise ValueError(f"Invalid reasoning parameter: {reasoning}")
+
     def run(
         self,
         prompt: str,
@@ -499,6 +526,8 @@ a dictionary with common and unique skills. It does not modify the internal skil
         images: Optional[Union[str, List[str]]] = None,
         image_detail: Optional[str] = None,
         stream: bool = False,
+        reasoning: Optional[Union[bool, str, Dict[str, Any]]] = None,
+        think_loud: bool = False,
         **additional_params
     ):
         """Runs a prompt with the InstantNeo agent.
@@ -515,6 +544,14 @@ Args:
     images (Optional[Union[str, List[str]]], optional): Images to use in this run.
     image_detail (Optional[str], optional): Detail of the images to use in this run.
     stream (bool, optional): Enable response streaming.
+    reasoning (Optional[Union[bool, str, Dict[str, Any]]], optional): Enable reasoning/thinking.
+        - True: Enable with default effort ("medium")
+        - str: Effort level ("low", "medium", "high")
+        - dict: Full config {"effort": str, "budget_tokens": int}
+        - None/False: Disabled (default)
+    think_loud (bool, optional): Include reasoning in the response output. Defaults to False.
+        - Normal mode: returns {"text": ..., "reasoning": ...} instead of just text
+        - Streaming mode: yields {"type": "reasoning"|"text", "content": ...} dicts
     additional_params (Dict[str, Any], optional): Additional parameters for the adapter.
         Can include:
             - model (str, optional): The model to use.
@@ -565,10 +602,10 @@ Args:
             image_detail=image_detail if image_detail is not None else self.config.image_detail,
         )
 
-        # Add any additional parameters
-        # No need to add again, already handled when creating run_params
-        # for key, value in additional_params.items():
-        #     run_params.additional_params[key] = value
+        # Normalize and add reasoning config
+        reasoning_config = self._normalize_reasoning(reasoning)
+        if reasoning_config:
+            run_params.additional_params['reasoning'] = reasoning_config
 
         if run_params.execution_mode not in [self.WAIT_RESPONSE, self.EXECUTION_ONLY, self.GET_ARGS]:
             raise ValueError(
@@ -637,10 +674,10 @@ Args:
             # For streaming, assign run_info before returning the generator.
             # The generator populates it progressively as chunks are consumed.
             self._last_run = run_info
-            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, start_time)
+            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, start_time, think_loud)
         else:
             try:
-                result = self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info)
+                result = self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, think_loud)
                 run_info.duration_ms = (time.perf_counter() - start_time) * 1000
                 return result
             except Exception as e:
@@ -731,30 +768,34 @@ Args:
             messages.append({"role": "user", "content": prompt})
         return messages
 
-    def _process_response(self, response, execution_mode, run_info: Optional[RunInfo] = None):
+    def _process_response(self, response, execution_mode, run_info: Optional[RunInfo] = None, think_loud: bool = False):
         """Process the response from the language model."""
         if not hasattr(response, 'choices') or len(response.choices) == 0:
-            #print("No 'choices' were found in the response")
             return None
 
         choice = response.choices[0]
         if not hasattr(choice, 'message'):
-            #print("No 'message' attribute found in the choice")
             return None
 
         message = choice.message
         content = message.content if message.content else ''
         tool_calls = message.tool_calls if hasattr(
             message, 'tool_calls') else None
+        reasoning = getattr(message, 'reasoning', None)
 
         if tool_calls:
             print(f'{"*" * 40}\n* {"I am using my skills. Wait for it...":^36} *\n{"*" * 40}\n')
             results = self._handle_tool_calls(tool_calls, execution_mode, run_info)
-            return {
+            result = {
                 "text": content if content else None,
                 "tool_results": results
             }
+            if think_loud and reasoning:
+                result["reasoning"] = reasoning
+            return result
         else:
+            if think_loud and reasoning:
+                return {"text": content, "reasoning": reasoning}
             return content
 
     def _handle_tool_calls(self, tool_calls, execution_mode, run_info: Optional[RunInfo] = None):
@@ -881,9 +922,9 @@ Args:
             tool_func = next(iter(tool_func.values())) if isinstance(tool_func, dict) else tool_func
             return tool_func(**arguments)
 
-    def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, start_time: float):
+    def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, start_time: float, think_loud: bool = False):
         """Handle streaming responses from the language model."""
-        #print(f"DEBUG: Valor de self.async_execution en _handle_streaming_response: {self.async_execution}")
+        from instantneo.models.standard import StandardStreamChunk
 
         # Create LLMCall to populate progressively
         llm_call = LLMCall(
@@ -894,10 +935,49 @@ Args:
         stream = self.adapter.create_streaming_chat_completion(
             **adapter_params.to_dict())
         full_response = ""
+        accumulated_reasoning = ""
         tool_calls = []
 
         for chunk in stream:
             try:
+                # Handle StandardStreamChunk objects from new adapter architecture
+                if isinstance(chunk, StandardStreamChunk):
+                    chunk_delta = chunk.delta
+
+                    # Handle reasoning delta
+                    if chunk_delta.reasoning:
+                        accumulated_reasoning += chunk_delta.reasoning
+                        if think_loud and execution_mode == self.WAIT_RESPONSE:
+                            yield {"type": "reasoning", "content": chunk_delta.reasoning}
+
+                    # Handle content delta
+                    if chunk_delta.content:
+                        full_response += chunk_delta.content
+                        if execution_mode == self.WAIT_RESPONSE:
+                            if think_loud:
+                                yield {"type": "text", "content": chunk_delta.content}
+                            else:
+                                yield chunk_delta.content
+
+                    # Handle tool calls
+                    if chunk_delta.tool_calls:
+                        tool_calls.extend(chunk_delta.tool_calls)
+
+                    # Capture usage
+                    if chunk.usage:
+                        llm_call.usage = {
+                            "input_tokens": chunk.usage.input_tokens,
+                            "output_tokens": chunk.usage.output_tokens,
+                            "total_tokens": chunk.usage.total_tokens,
+                        }
+                        run_info.usage = llm_call.usage
+
+                    if chunk_delta.finish_reason == 'stop':
+                        break
+
+                    continue
+
+                # Legacy handling for string/dict chunks
                 if isinstance(chunk, int):
                     chunk = str(chunk)
 
@@ -913,7 +993,10 @@ Args:
                     if content:
                         full_response += content
                         if execution_mode == self.WAIT_RESPONSE:
-                            yield content
+                            if think_loud:
+                                yield {"type": "text", "content": content}
+                            else:
+                                yield content
 
                     if 'tool_calls' in delta:
                         tool_calls.extend(delta['tool_calls'])
@@ -933,15 +1016,25 @@ Args:
                 else:
                     full_response += str(chunk_data)
                     if execution_mode == self.WAIT_RESPONSE:
-                        yield str(chunk_data)
+                        if think_loud:
+                            yield {"type": "text", "content": str(chunk_data)}
+                        else:
+                            yield str(chunk_data)
 
             except json.JSONDecodeError:
                 full_response += str(chunk)
                 if execution_mode == self.WAIT_RESPONSE:
-                    yield str(chunk)
+                    if think_loud:
+                        yield {"type": "text", "content": str(chunk)}
+                    else:
+                        yield str(chunk)
             except Exception as e:
                 run_info.error = str(e)
                 print(f"Error inesperado: {e}")
+
+        # Store accumulated reasoning in run_info
+        llm_call.reasoning_content = accumulated_reasoning if accumulated_reasoning else None
+        run_info.reasoning = llm_call.reasoning_content
 
         # Update LLMCall with final data
         llm_call.response_content = full_response
@@ -1093,7 +1186,7 @@ Args:
         # Finalize timing
         run_info.duration_ms = (time.perf_counter() - start_time) * 1000
 
-    def _handle_normal_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo):
+    def _handle_normal_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, think_loud: bool = False):
         """Handle normal (non-streaming) responses from the language model."""
         response = self.adapter.create_chat_completion(
             **adapter_params.to_dict())
@@ -1108,6 +1201,10 @@ Args:
             choice = response.choices[0]
             llm_call.response_content = choice.message.content if hasattr(choice, 'message') and choice.message else None
             llm_call.finish_reason = response.finish_reason if hasattr(response, 'finish_reason') else None
+
+            # Capture reasoning content
+            if hasattr(choice, 'message') and choice.message:
+                llm_call.reasoning_content = getattr(choice.message, 'reasoning', None)
 
             # Capture tool calls requested
             if hasattr(choice, 'message') and choice.message and hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
@@ -1132,6 +1229,7 @@ Args:
             llm_call.response_model = response.model
 
         run_info.llm_calls.append(llm_call)
+        run_info.reasoning = llm_call.reasoning_content
         run_info.provider_timing = self._extract_provider_timing(response)
 
         if return_full_response:
@@ -1139,7 +1237,7 @@ Args:
             run_info.finish_reason = llm_call.finish_reason
             return response
         else:
-            result = self._process_response(response, execution_mode, run_info)
+            result = self._process_response(response, execution_mode, run_info, think_loud)
             run_info.response_content = llm_call.response_content
             run_info.finish_reason = llm_call.finish_reason
             return result

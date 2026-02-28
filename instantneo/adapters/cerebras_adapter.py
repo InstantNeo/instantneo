@@ -60,6 +60,12 @@ class CerebrasAdapter(BaseAdapter):
             cerebras_tools = self._translate_tools(request.tools) if request.tools else None
             cerebras_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort"})
+                extra_params["reasoning_effort"] = request.reasoning.get("effort", "medium")
+
             # Llamar al fetcher
             response = self.client.create_chat_completion(
                 messages=cerebras_messages,
@@ -72,7 +78,7 @@ class CerebrasAdapter(BaseAdapter):
                 tools=cerebras_tools,
                 tool_choice=cerebras_tool_choice,
                 stream=False,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir respuesta Cerebras → formato estándar
@@ -97,6 +103,12 @@ class CerebrasAdapter(BaseAdapter):
             cerebras_tools = self._translate_tools(request.tools) if request.tools else None
             cerebras_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort"})
+                extra_params["reasoning_effort"] = request.reasoning.get("effort", "medium")
+
             # Llamar al fetcher con streaming
             stream = self.client.create_chat_completion_stream(
                 messages=cerebras_messages,
@@ -108,7 +120,7 @@ class CerebrasAdapter(BaseAdapter):
                 seed=request.seed,
                 tools=cerebras_tools,
                 tool_choice=cerebras_tool_choice,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir chunks
@@ -281,18 +293,14 @@ class CerebrasAdapter(BaseAdapter):
                 for tc in choice.message.tool_calls
             ]
 
-        # Combinar contenido principal con reasoning si existe
         content = choice.message.content
-        if choice.message.reasoning and content:
-            # Agregar reasoning como metadata en el raw_response
-            pass
-        elif choice.message.reasoning and not content:
-            content = choice.message.reasoning
+        reasoning_content = choice.message.reasoning if choice.message.reasoning else None
 
         # Construir mensaje de respuesta
         response_message = StandardResponseMessage(
             content=content,
             tool_calls=tool_calls,
+            reasoning=reasoning_content,
         )
 
         # Construir choice estándar

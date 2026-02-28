@@ -56,6 +56,7 @@ class LLMCall:
     response_id: Optional[str] = None
     response_model: Optional[str] = None
     raw_response: Any = None
+    reasoning_content: Optional[str] = None
 
 
 @dataclass
@@ -119,6 +120,9 @@ class RunInfo:
     # Error
     error: Optional[str] = None
 
+    # Reasoning
+    reasoning: Optional[str] = None
+
     # Timing
     duration_ms: Optional[float] = None
     provider_timing: Optional[Dict] = None
@@ -147,6 +151,7 @@ class RunInfo:
                 "usage": lc.usage,
                 "response_id": lc.response_id,
                 "response_model": lc.response_model,
+                "reasoning_content": lc.reasoning_content,
                 # raw_response excluido intencionalmente
             }
 
@@ -176,6 +181,7 @@ class RunInfo:
             "tool_executions": [_skill_exec_to_dict(se) for se in self.tool_executions],
             "usage": self.usage,
             "run_params": _safe_serialize(self.run_params),
+            "reasoning": self.reasoning,
             "error": self.error,
             "duration_ms": self.duration_ms,
             "provider_timing": self.provider_timing,

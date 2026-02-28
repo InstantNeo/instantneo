@@ -58,6 +58,12 @@ class GroqAdapter(BaseAdapter):
             groq_tools = self._translate_tools(request.tools) if request.tools else None
             groq_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort"})
+                extra_params["reasoning_effort"] = request.reasoning.get("effort", "medium")
+
             # Llamar al fetcher
             response = self.client.create_chat_completion(
                 messages=groq_messages,
@@ -70,7 +76,7 @@ class GroqAdapter(BaseAdapter):
                 tools=groq_tools,
                 tool_choice=groq_tool_choice,
                 stream=False,
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir respuesta Groq → formato estándar
@@ -95,6 +101,12 @@ class GroqAdapter(BaseAdapter):
             groq_tools = self._translate_tools(request.tools) if request.tools else None
             groq_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
+            # Construir parámetros extra
+            extra_params = dict(request.provider_params)
+            if request.reasoning:
+                self._warn_unsupported_reasoning_keys(request.reasoning, {"effort"})
+                extra_params["reasoning_effort"] = request.reasoning.get("effort", "medium")
+
             # Llamar al fetcher con streaming
             stream = self.client.create_chat_completion_stream(
                 messages=groq_messages,
@@ -107,7 +119,7 @@ class GroqAdapter(BaseAdapter):
                 tools=groq_tools,
                 tool_choice=groq_tool_choice,
                 stream_options={"include_usage": True},
-                **request.provider_params,
+                **extra_params,
             )
 
             # Traducir chunks
@@ -280,10 +292,16 @@ class GroqAdapter(BaseAdapter):
                 for tc in choice.message.tool_calls
             ]
 
+        # Extraer reasoning si existe
+        reasoning_content = None
+        if hasattr(choice.message, 'reasoning') and choice.message.reasoning:
+            reasoning_content = choice.message.reasoning
+
         # Construir mensaje de respuesta
         response_message = StandardResponseMessage(
             content=choice.message.content,
             tool_calls=tool_calls,
+            reasoning=reasoning_content,
         )
 
         # Construir choice estándar

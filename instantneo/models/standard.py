@@ -173,6 +173,7 @@ class StandardRequest:
         tool_choice: Control de selección de herramientas
         stop: Secuencias de parada
         seed: Semilla para reproducibilidad
+        reasoning: Configuración de reasoning/thinking (effort, budget_tokens)
         provider_params: Parámetros específicos del proveedor (passthrough)
     """
     model: str
@@ -185,6 +186,7 @@ class StandardRequest:
     tool_choice: Optional[StandardToolChoice] = None
     stop: Optional[List[str]] = None
     seed: Optional[int] = None
+    reasoning: Optional[Dict[str, Any]] = None
     # Parámetros específicos del proveedor pasan sin modificación
     provider_params: Dict[str, Any] = field(default_factory=dict)
 
@@ -202,10 +204,12 @@ class StandardUsage:
         input_tokens: Tokens en el prompt/entrada
         output_tokens: Tokens generados
         total_tokens: Total de tokens usados
+        reasoning_tokens: Tokens usados en reasoning/thinking
     """
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    reasoning_tokens: Optional[int] = None
 
 
 @dataclass
@@ -228,10 +232,12 @@ class StandardResponseMessage:
     Attributes:
         content: Texto generado (puede ser None si hay tool_calls)
         tool_calls: Herramientas invocadas por el modelo
+        reasoning: Contenido de reasoning/thinking del modelo
         role: Siempre "assistant"
     """
     content: Optional[str]
     tool_calls: Optional[List[StandardToolCall]] = None
+    reasoning: Optional[str] = None
     role: Literal["assistant"] = "assistant"
 
 
@@ -284,6 +290,7 @@ class StandardStreamDelta:
     """Delta de contenido en streaming."""
     content: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    reasoning: Optional[str] = None
     finish_reason: Optional[str] = None
 
 
