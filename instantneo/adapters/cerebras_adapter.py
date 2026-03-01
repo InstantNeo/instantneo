@@ -1,7 +1,7 @@
 """
-Adapter para Groq API.
+Adapter para Cerebras API.
 
-Traduce entre el formato estándar de InstantNeo y el formato de Groq,
+Traduce entre el formato estándar de InstantNeo y el formato de Cerebras,
 utilizando el fetcher HTTP puro en lugar del SDK.
 """
 
@@ -19,18 +19,20 @@ from instantneo.models.standard import (
     StandardStreamChunk,
     StandardStreamDelta,
 )
-from instantneo.fetchers.groq import GroqClient, Message, Tool, ToolFunction
+from instantneo.fetchers.cerebras import CerebrasClient, Message, Tool, ToolFunction
 
 
-class GroqAdapter(BaseAdapter):
+class CerebrasAdapter(BaseAdapter):
     """
-    Adapter para Groq API.
+    Adapter para Cerebras API.
 
-    Groq usa un formato muy similar a OpenAI (compatible), lo que simplifica
+    Cerebras usa un formato compatible con OpenAI Chat Completions, lo que simplifica
     la traducción. Las principales diferencias son:
     - max_tokens → max_completion_tokens
-    - Límite de 128 tools
-    - Solo soporta n=1
+    - temperature rango 0-1.5
+    - Soporte para clear_thinking y reasoning
+    - time_info en la respuesta con tiempos de procesamiento
+    - Soporte para speculative decoding via prediction
     """
 
     def __init__(self, api_key: str):
@@ -38,13 +40,13 @@ class GroqAdapter(BaseAdapter):
         Inicializa el adapter con el cliente HTTP.
 
         Args:
-            api_key: API key de Groq
+            api_key: API key de Cerebras
         """
-        self.client = GroqClient(api_key=api_key)
+        self.client = CerebrasClient(api_key=api_key)
 
     def complete(self, request: StandardRequest) -> StandardResponse:
         """
-        Ejecuta una completion usando Groq API.
+        Ejecuta una completion usando Cerebras API.
 
         Args:
             request: Petición en formato estándar
@@ -53,10 +55,10 @@ class GroqAdapter(BaseAdapter):
             StandardResponse con la respuesta del modelo
         """
         try:
-            # Traducir request estándar → formato Groq
-            groq_messages = self._translate_messages(request.messages)
-            groq_tools = self._translate_tools(request.tools) if request.tools else None
-            groq_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
+            # Traducir request estándar → formato Cerebras
+            cerebras_messages = self._translate_messages(request.messages)
+            cerebras_tools = self._translate_tools(request.tools) if request.tools else None
+            cerebras_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
             # Construir parámetros extra
             extra_params = dict(request.provider_params)
@@ -66,28 +68,28 @@ class GroqAdapter(BaseAdapter):
 
             # Llamar al fetcher
             response = self.client.create_chat_completion(
-                messages=groq_messages,
+                messages=cerebras_messages,
                 model=request.model,
                 temperature=request.temperature,
                 max_completion_tokens=request.max_tokens,
                 top_p=request.top_p,
                 stop=request.stop,
                 seed=request.seed,
-                tools=groq_tools,
-                tool_choice=groq_tool_choice,
+                tools=cerebras_tools,
+                tool_choice=cerebras_tool_choice,
                 stream=False,
                 **extra_params,
             )
 
-            # Traducir respuesta Groq → formato estándar
+            # Traducir respuesta Cerebras → formato estándar
             return self._translate_response(response)
 
         except Exception as e:
-            raise RuntimeError(f"Error en Groq API: {str(e)}")
+            raise RuntimeError(f"Error en Cerebras API: {str(e)}")
 
     def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
         """
-        Ejecuta una completion con streaming usando Groq API.
+        Ejecuta una completion con streaming usando Cerebras API.
 
         Args:
             request: Petición en formato estándar
@@ -97,9 +99,9 @@ class GroqAdapter(BaseAdapter):
         """
         try:
             # Traducir request
-            groq_messages = self._translate_messages(request.messages)
-            groq_tools = self._translate_tools(request.tools) if request.tools else None
-            groq_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
+            cerebras_messages = self._translate_messages(request.messages)
+            cerebras_tools = self._translate_tools(request.tools) if request.tools else None
+            cerebras_tool_choice = self._translate_tool_choice(request.tool_choice) if request.tool_choice else None
 
             # Construir parámetros extra
             extra_params = dict(request.provider_params)
@@ -109,16 +111,15 @@ class GroqAdapter(BaseAdapter):
 
             # Llamar al fetcher con streaming
             stream = self.client.create_chat_completion_stream(
-                messages=groq_messages,
+                messages=cerebras_messages,
                 model=request.model,
                 temperature=request.temperature,
                 max_completion_tokens=request.max_tokens,
                 top_p=request.top_p,
                 stop=request.stop,
                 seed=request.seed,
-                tools=groq_tools,
-                tool_choice=groq_tool_choice,
-                stream_options={"include_usage": True},
+                tools=cerebras_tools,
+                tool_choice=cerebras_tool_choice,
                 **extra_params,
             )
 
@@ -127,28 +128,28 @@ class GroqAdapter(BaseAdapter):
                 yield self._translate_stream_chunk(chunk)
 
         except Exception as e:
-            raise RuntimeError(f"Error en Groq API streaming: {str(e)}")
+            raise RuntimeError(f"Error en Cerebras API streaming: {str(e)}")
 
     def supports_images(self) -> bool:
-        """Groq soporta imágenes con modelos de visión específicos."""
+        """Cerebras soporta imágenes con modelos de visión."""
         return True
 
     # =========================================================================
-    # MÉTODOS DE TRADUCCIÓN: StandardRequest → Groq
+    # MÉTODOS DE TRADUCCIÓN: StandardRequest → Cerebras
     # =========================================================================
 
     def _translate_messages(self, messages: List) -> List[Message]:
-        """Traduce mensajes estándar al formato Groq."""
-        groq_messages = []
+        """Traduce mensajes estándar al formato Cerebras."""
+        cerebras_messages = []
 
         for msg in messages:
             # Manejar contenido (puede ser string o lista de content blocks)
             content = msg.content
             if isinstance(content, list):
-                # Convertir content blocks al formato Groq
+                # Convertir content blocks al formato Cerebras
                 content = self._translate_content_blocks(content)
 
-            groq_msg = Message(
+            cerebras_msg = Message(
                 role=msg.role,
                 content=content,
                 name=msg.name,
@@ -157,7 +158,7 @@ class GroqAdapter(BaseAdapter):
 
             # Agregar tool_calls si existen (para mensajes de assistant)
             if msg.tool_calls:
-                groq_msg.tool_calls = [
+                cerebras_msg.tool_calls = [
                     {
                         "id": tc.id,
                         "type": "function",
@@ -169,12 +170,12 @@ class GroqAdapter(BaseAdapter):
                     for tc in msg.tool_calls
                 ]
 
-            groq_messages.append(groq_msg)
+            cerebras_messages.append(cerebras_msg)
 
-        return groq_messages
+        return cerebras_messages
 
     def _translate_content_blocks(self, blocks: List) -> List[Dict[str, Any]]:
-        """Traduce content blocks al formato Groq (compatible OpenAI Chat Completions)."""
+        """Traduce content blocks al formato Cerebras (compatible OpenAI Chat Completions)."""
         result = []
 
         for block in blocks:
@@ -206,7 +207,7 @@ class GroqAdapter(BaseAdapter):
                         "text": block.get("text", ""),
                     })
                 elif block_type == "image_url":
-                    # Ya está en formato Groq/OpenAI
+                    # Ya está en formato Cerebras/OpenAI
                     result.append(block)
                 elif block_type == "image":
                     # Convertir formato estándar a image_url
@@ -229,7 +230,7 @@ class GroqAdapter(BaseAdapter):
         return result
 
     def _translate_tools(self, tools: List) -> List[Tool]:
-        """Traduce herramientas estándar al formato Groq."""
+        """Traduce herramientas estándar al formato Cerebras."""
         return [
             Tool(
                 type="function",
@@ -243,7 +244,7 @@ class GroqAdapter(BaseAdapter):
         ]
 
     def _translate_tool_choice(self, tool_choice) -> Any:
-        """Traduce tool_choice estándar al formato Groq."""
+        """Traduce tool_choice estándar al formato Cerebras."""
         if tool_choice.type == "auto":
             return "auto"
         elif tool_choice.type == "none":
@@ -258,11 +259,11 @@ class GroqAdapter(BaseAdapter):
         return "auto"
 
     # =========================================================================
-    # MÉTODOS DE TRADUCCIÓN: Groq → StandardResponse
+    # MÉTODOS DE TRADUCCIÓN: Cerebras → StandardResponse
     # =========================================================================
 
     def _translate_response(self, response) -> StandardResponse:
-        """Traduce respuesta Groq al formato estándar."""
+        """Traduce respuesta Cerebras al formato estándar."""
         # Obtener el primer choice
         choice = response.choices[0] if response.choices else None
 
@@ -292,14 +293,12 @@ class GroqAdapter(BaseAdapter):
                 for tc in choice.message.tool_calls
             ]
 
-        # Extraer reasoning si existe
-        reasoning_content = None
-        if hasattr(choice.message, 'reasoning') and choice.message.reasoning:
-            reasoning_content = choice.message.reasoning
+        content = choice.message.content
+        reasoning_content = choice.message.reasoning if choice.message.reasoning else None
 
         # Construir mensaje de respuesta
         response_message = StandardResponseMessage(
-            content=choice.message.content,
+            content=content,
             tool_calls=tool_calls,
             reasoning=reasoning_content,
         )
@@ -325,7 +324,7 @@ class GroqAdapter(BaseAdapter):
         )
 
     def _translate_stream_chunk(self, chunk: Dict[str, Any]) -> StandardStreamChunk:
-        """Traduce un chunk de streaming Groq al formato estándar."""
+        """Traduce un chunk de streaming Cerebras al formato estándar."""
         delta = StandardStreamDelta()
 
         if "choices" in chunk and chunk["choices"]:

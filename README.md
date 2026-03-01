@@ -22,29 +22,18 @@ InstantNeo is a Python library that lets you create LLM-based agents quickly and
 ## Features
 
 - **Unified Provider Interface:** Switch seamlessly between models providers with consistent syntax. The library handles different API requirements behind the scenes.
-- **Quick and powerful Skill Management:** Define agent capabilities using simple Python decorators that transform functions into skills with metadata, descriptions, and parameter validation. Add, remove, and list skills dynamically as your agent's needs evolve.
-- **Flexible Execution Modes:** Control exactly how skills are executed with three modes: wait for results, fire skills in the background, or just extract arguments without execution for planning purposes.
+- **Quick and powerful Tool Management:** Define agent capabilities using simple Python decorators that transform functions into tools with metadata, descriptions, and parameter validation. Add, remove, and list tools dynamically as your agent's needs evolve.
+- **Flexible Execution Modes:** Control exactly how tools are executed with three modes: wait for results, fire tools in the background, or just extract arguments without execution for planning purposes.
 - **Text and Image Support:** Process both text and images through a single consistent API. Send images alongside prompts to vision-capable models and control the level of image analysis detail as needed.
 - **Customizable Agent Settings:** Modify agent behavior on-the-fly by overriding temperature, max tokens, role setup, and other parameters for specific interactions without recreating the entire agent.
 
 ## Installation
-InstantNeo requires specifying which providers will be installed. You can use [all] to install dependencies for all supported providers:
 
 ```bash
-pip install instantneo[all]
+pip install instantneo
 ```
 
-```bash
-pip install instantneo[openai]
-```
-
-```bash
-pip install instantneo[groq]
-```
-
-```bash
-pip install instantneo[anthropic]
-```
+That's it. Works with OpenAI, Anthropic, Groq, Gemini, and Vertex AI out of the box.
 
 ## Quickstart
 
@@ -54,8 +43,8 @@ pip install instantneo[anthropic]
 from instantneo import InstantNeo
 
 neo = InstantNeo(
-    provider="openai", 
-    api_key="your-api-key", 
+    provider="openai",
+    api_key="your-api-key",
     model="gpt-4o",
     role_setup="You are Neo, the chosen one. Ready to learn anything."
 )
@@ -66,10 +55,9 @@ print(neo.run("What's the Matrix?"))
 ### Teach Him Kung Fu
 
 ```python
-from instantneo.skills import skill
-from instantneo import InstantNeo
+from instantneo import InstantNeo, tool
 
-@skill(description="Execute a kung fu move", parameters={"move": "e.g., dragon punch", "intensity": "1-10"})
+@tool(description="Execute a kung fu move", parameters={"move": "e.g., dragon punch", "intensity": "1-10"})
 def kung_fu(move: str, intensity: int = 5) -> str:
     return f"Hit {move} at intensity {intensity}. I know kung fu!"
 
@@ -78,15 +66,31 @@ neo = InstantNeo(
     api_key="your-api-key",
     model="claude-3-7-sonnet-20250219",
     role_setup="You are Neo, martial arts downloaded.",
-    skills=["kung_fu"]
+    skills=[kung_fu]
 )
 
 print(neo.run("Three agents ahead. What move?"))
 ```
 
+### Use Vertex AI
+
+```python
+from instantneo import InstantNeo
+
+neo = InstantNeo(
+    provider="vertexai",
+    model="gemini-2.5-flash",
+    role_setup="You are Neo, the chosen one.",
+    location="us-central1",
+    service_account_file="path/to/service-account.json"
+)
+
+print(neo.run("I need an exit."))
+```
+
 ## API Reference
 
-- **InstantNeo Class**: Set provider, api_key, model, role_setup, plus skills and tuning params (temperature, max_tokens, etc.).
+- **InstantNeo Class**: Set provider, api_key, model, role_setup, plus tools and tuning params (temperature, max_tokens, etc.).
 - **run() Method**: Feed it a prompt, pick an execution_mode (WAIT_RESPONSE, EXECUTION_ONLY, GET_ARGS), override settings as needed.
 
 Details in the docs.
@@ -97,7 +101,7 @@ InstantNeo leans on Minsky's "Society of Mind": small, specialized agents you co
 
 ## Documentation
 
-Full scoop at instantneo.readthedocs.io, including tutorials on multi-agent setups and advanced skills.
+Full scoop at /docs, including tutorials on multi-agent setups and advanced skills.
 
 ## Contributing
 
