@@ -1,0 +1,79 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'instantneo/**'
+      - 'setup.py'
+      - 'pyproject.toml'
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if version changed
+        id: check
+        run: |
+          python3 << 'EOF'
+          import re, urllib.request, json, os
+
+          # Extract version from setup.py
+          with open("setup.py") as f:
+              match = re.search(r"version=['\"]([^'\"]+)['\"]", f.read())
+          if not match:
+              print("Could not extract version from setup.py")
+              exit(1)
+          local_version = match.group(1)
+
+          # Query PyPI for the latest published version
+          try:
+              req = urllib.request.Request(
+                  "https://pypi.org/pypi/instantneo/json",
+                  headers={"Accept": "application/json"},
+              )
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  pypi_version = json.loads(resp.read())["info"]["version"]
+          except urllib.error.HTTPError as e:
+              if e.code == 404:
+                  pypi_version = None
+              else:
+                  raise
+
+          should_publish = local_version != pypi_version
+          print(f"Local version:  {local_version}")
+          print(f"PyPI version:   {pypi_version}")
+          print(f"Should publish: {should_publish}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"version={local_version}\n")
+              f.write(f"should_publish={'true' if should_publish else 'false'}\n")
+          EOF
+
+  publish:
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*
