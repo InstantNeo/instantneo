@@ -58,7 +58,7 @@ class OpenAIClient:
     """Cliente HTTP para OpenAI API"""
 
     BASE_URL = "https://api.openai.com/v1/responses"
-    DEFAULT_TIMEOUT = 60.0
+    DEFAULT_TIMEOUT = 600.0
 
     def __init__(
         self,

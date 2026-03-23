@@ -198,7 +198,7 @@ class VertexAIClient:
         )
     """
 
-    DEFAULT_TIMEOUT = 60.0
+    DEFAULT_TIMEOUT = 600.0
     TOKEN_EXPIRY_BUFFER = 60  # Refrescar 60 segundos antes de expirar
 
     def __init__(
