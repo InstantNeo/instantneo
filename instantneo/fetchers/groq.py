@@ -33,7 +33,7 @@ class GroqClient:
     """Cliente HTTP para Groq API"""
 
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
-    DEFAULT_TIMEOUT = 60.0
+    DEFAULT_TIMEOUT = 600.0
 
     def __init__(
         self,

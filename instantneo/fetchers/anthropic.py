@@ -29,7 +29,7 @@ class AnthropicClient:
     """Cliente HTTP para Anthropic Claude API"""
 
     BASE_URL = "https://api.anthropic.com/v1/messages"
-    DEFAULT_TIMEOUT = 60.0
+    DEFAULT_TIMEOUT = 600.0
 
     def __init__(
         self,

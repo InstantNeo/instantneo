@@ -31,7 +31,7 @@ class GeminiClient:
     """Cliente HTTP para Google Gemini API"""
 
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-    DEFAULT_TIMEOUT = 60.0
+    DEFAULT_TIMEOUT = 600.0
 
     def __init__(
         self,
