@@ -9,10 +9,12 @@ from .anthropic import fetch_anthropic
 from .openai import fetch_openai
 from .groq import fetch_groq
 from .cerebras import fetch_cerebras
+from .vertex_anthropic import VertexAnthropicClient
 
 __all__ = [
     "fetch_anthropic",
     "fetch_openai",
     "fetch_groq",
     "fetch_cerebras",
+    "VertexAnthropicClient",
 ]

@@ -277,8 +277,12 @@ class VertexAIClient:
     def _get_endpoint(self, model: str, stream: bool = False) -> str:
         """Construye la URL del endpoint."""
         action = "streamGenerateContent" if stream else "generateContent"
+        if self.location == "global":
+            host = "aiplatform.googleapis.com"
+        else:
+            host = f"{self.location}-aiplatform.googleapis.com"
         return (
-            f"https://{self.location}-aiplatform.googleapis.com/v1/"
+            f"https://{host}/v1/"
             f"projects/{self.project_id}/locations/{self.location}/"
             f"publishers/google/models/{model}:{action}"
         )

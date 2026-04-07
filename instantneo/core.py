@@ -1285,6 +1285,7 @@ Args:
             "cerebras": ("instantneo.adapters.cerebras_adapter", "CerebrasAdapter"),
             "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
             "vertexai": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
+            "vertex_anthropic": ("instantneo.adapters.vertex_anthropic_adapter", "VertexAnthropicAdapter"),
         }
 
         if self.config.provider not in adapter_map:
@@ -1295,7 +1296,7 @@ Args:
         adapter_class = getattr(module, class_name)
 
         # Handle different authentication methods
-        if self.config.provider == "vertexai":
+        if self.config.provider in ("vertexai", "vertex_anthropic"):
             if not self.config.service_account_file:
                 raise ValueError("service_account_file is required for Vertex AI provider")
             if not self.config.location:

@@ -29,3 +29,9 @@ try:
     __all__.append('CerebrasAdapter')
 except ImportError:
     CerebrasAdapter = None
+
+try:
+    from .vertex_anthropic_adapter import VertexAnthropicAdapter
+    __all__.append('VertexAnthropicAdapter')
+except ImportError:
+    VertexAnthropicAdapter = None
