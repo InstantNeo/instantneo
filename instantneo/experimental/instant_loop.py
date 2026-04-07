@@ -37,10 +37,6 @@ class InstantLoop:
 
     Args:
         agent: Instancia de InstantNeo configurada con tools y system prompt.
-        prompt_template: Template del prompt con placeholders personalizados
-            y {historial}. El placeholder {historial} es reservado y se
-            inyecta automáticamente. Otros placeholders (ej: {producto}) se
-            reemplazan con el valor de `product` pasado a run().
         stop_tool: Nombre de la tool que señala fin del loop.
             Cuando el agente la llama, el loop termina y los argumentos
             de esa tool se devuelven como resultado.
@@ -56,13 +52,9 @@ class InstantLoop:
         image_detail: Nivel de detalle de las imágenes ("auto", "low", "high").
     """
 
-    PRODUCTO_PLACEHOLDER = "{producto}"
-    HISTORIAL_PLACEHOLDER = "{historial}"
-
     def __init__(
         self,
         agent,
-        prompt_template: str,
         stop_tool: str = "report_classification",
         max_turns: int = 30,
         debug_dir: str | Path | None = None,
@@ -72,7 +64,6 @@ class InstantLoop:
         image_detail: str | None = None,
     ):
         self.agent = agent
-        self.prompt_template = prompt_template
         self.stop_tool = stop_tool
         self.max_turns = max_turns
         self.debug_dir = Path(debug_dir) if debug_dir else None
@@ -81,8 +72,13 @@ class InstantLoop:
         self.images = images
         self.image_detail = image_detail
 
-    def run(self, product: str) -> dict:
+    def run(self, prompt: str) -> dict:
         """Ejecuta el loop completo.
+
+        Args:
+            prompt: Instrucción inicial para el agente. Se envía en el
+                primer turno. En los turnos siguientes el agente recibe
+                solo el historial (que ya incluye esta instrucción).
 
         Returns:
             {"result": dict, "trace": dict} donde trace incluye turns,
@@ -108,17 +104,17 @@ class InstantLoop:
             run_dir.mkdir(parents=True, exist_ok=True)
 
         if run_dir:
-            self._write_progress(run_dir, product, started_at, "running",
+            self._write_progress(run_dir, prompt, started_at, "running",
                                  turns, total_usage, None, None)
 
         for turn_num in range(1, self.max_turns + 1):
-            prompt = self._build_prompt(product, history, turn_num)
+            turn_prompt = self._build_prompt(prompt, history, turn_num)
 
-            logger.info("Turn %d/%d (prompt=%d chars)", turn_num, self.max_turns, len(prompt))
+            logger.info("Turn %d/%d (prompt=%d chars)", turn_num, self.max_turns, len(turn_prompt))
 
             # Marcar turno en progreso
             if run_dir:
-                self._write_progress(run_dir, product, started_at, "running",
+                self._write_progress(run_dir, prompt, started_at, "running",
                                      turns, total_usage, None, None,
                                      in_progress_turn=turn_num)
 
@@ -126,7 +122,7 @@ class InstantLoop:
             for attempt in range(3):
                 try:
                     self.agent.run(
-                        prompt,
+                        turn_prompt,
                         images=self.images,
                         image_detail=self.image_detail,
                     )
@@ -146,7 +142,7 @@ class InstantLoop:
             turn_trace = self._extract_turn_trace(run_info, turn_num)
 
             # Siempre capturar prompt enviado (se usa en debug)
-            turn_trace["prompt_sent"] = prompt
+            turn_trace["prompt_sent"] = turn_prompt
 
             turns.append(turn_trace)
 
@@ -167,7 +163,7 @@ class InstantLoop:
 
             # Actualizar progress después del turno
             if run_dir:
-                self._write_progress(run_dir, product, started_at, "running",
+                self._write_progress(run_dir, prompt, started_at, "running",
                                      turns, total_usage, None, None)
 
             # Acumular historial (solo el delta de este turno)
@@ -230,9 +226,9 @@ class InstantLoop:
             final_result = result or {"error": f"No llamó {self.stop_tool}"}
             status = "completed" if result else "error"
             error = None if result else f"No llamó {self.stop_tool} en {self.max_turns} turnos"
-            self._write_progress(run_dir, product, started_at, status,
+            self._write_progress(run_dir, prompt, started_at, status,
                                  turns, total_usage, final_result, error)
-            self._write_debug_files(run_dir, product, final_result, trace)
+            self._write_debug_files(run_dir, prompt, final_result, trace)
 
         return {
             "result": result or {"error": f"No llamó {self.stop_tool}"},
@@ -308,24 +304,33 @@ class InstantLoop:
             "tool_executions": tool_execs,
         }
 
-    def _build_prompt(self, product: str, history: list[dict], turn_num: int) -> str:
-        """Construye el prompt inyectando el input y el historial en el template."""
-        history_block = self._format_history(history, turn_num)
-        prompt = self.prompt_template.replace(self.PRODUCTO_PLACEHOLDER, product)
-        prompt = prompt.replace(self.HISTORIAL_PLACEHOLDER, history_block)
-        return prompt
+    def _build_prompt(self, initial_prompt: str, history: list[dict], turn_num: int) -> str:
+        """Construye el prompt para el turno actual.
 
-    def _format_history(self, history: list[dict], turn_num: int) -> str:
+        Turno 1: envía la instrucción inicial tal cual.
+        Turno 2+: envía solo el historial (que ya incluye la instrucción
+        inicial marcada como user:).
+        """
+        if turn_num == 1:
+            return initial_prompt
+        return self._format_history(initial_prompt, history, turn_num)
+
+    def _format_history(self, initial_prompt: str, history: list[dict], turn_num: int) -> str:
         """Formatea el historial acumulado con estructura clara.
 
-        Usa <historial> como wrapper, headers markdown por turno,
-        y subsecciones separadas para tools y respuesta del modelo.
+        Incluye la instrucción inicial como user: y las respuestas del
+        agente como assistant:, con herramientas y resultados.
         """
         if not history:
             return ""
 
         parts = []
         parts.append(f"Estás en el turno {turn_num} de {self.max_turns} posibles.")
+        parts.append("")
+
+        # Instrucción inicial como contexto
+        parts.append("## Instrucción inicial")
+        parts.append(f"user: {initial_prompt}")
         parts.append("")
         parts.append("<historial>")
 
@@ -361,9 +366,9 @@ class InstantLoop:
                     parts.append(f"  resultado: {te['result']}")
                     parts.append("")
 
-            # Subsección: respuesta/razonamiento del modelo
+            # Subsección: respuesta del modelo
             if t_data["response"]:
-                parts.append("### Tu razonamiento y respuesta en este turno")
+                parts.append("### assistant:")
                 parts.append("")
                 parts.append(t_data["response"])
                 parts.append("")
@@ -392,7 +397,7 @@ class InstantLoop:
     def _write_progress(
         self,
         run_dir: Path,
-        product: str,
+        input_prompt: str,
         started_at: datetime,
         status: str,
         turns: list[dict],
@@ -439,7 +444,7 @@ class InstantLoop:
             "status": status,
             "config_name": self.agent_config.get("name"),
             "model": self.agent_config.get("model"),
-            "product": product,
+            "prompt": input_prompt,
             "started_at": started_at.isoformat(),
             "current_turn": in_progress_turn or len(turns),
             "max_turns": self.max_turns,
@@ -460,7 +465,7 @@ class InstantLoop:
             encoding="utf-8",
         )
 
-    def _write_debug_files(self, run_dir: Path, product: str, result: dict | None, trace: dict) -> None:
+    def _write_debug_files(self, run_dir: Path, input_prompt: str, result: dict | None, trace: dict) -> None:
         """Genera archivos de debug completos al finalizar el run.
 
         Archivos:
@@ -472,7 +477,7 @@ class InstantLoop:
         # 1. trace.json — dump completo
         trace_data = {
             "config": self._sanitize_config(),
-            "input": {"product": product},
+            "input": {"prompt": input_prompt},
             "result": result,
             "trace": trace,
         }
@@ -483,25 +488,25 @@ class InstantLoop:
 
         # 2. report.md — markdown técnico
         (run_dir / "report.md").write_text(
-            self._build_debug_md(product, result, trace),
+            self._build_debug_md(input_prompt, result, trace),
             encoding="utf-8",
         )
 
         # 3. report.json — JSON estructurado
         (run_dir / "report.json").write_text(
-            json.dumps(self._build_debug_json(product, result, trace), indent=2, ensure_ascii=False, default=str),
+            json.dumps(self._build_debug_json(input_prompt, result, trace), indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
 
         # 4. agent_trace.md — narrativa limpia del proceso
         (run_dir / "agent_trace.md").write_text(
-            self._build_agent_trace(product, result, trace),
+            self._build_agent_trace(input_prompt, result, trace),
             encoding="utf-8",
         )
 
         logger.info("Debug files written to: %s", run_dir)
 
-    def _build_agent_trace(self, product: str, result: dict | None, trace: dict) -> str:
+    def _build_agent_trace(self, input_prompt: str, result: dict | None, trace: dict) -> str:
         """Genera narrativa limpia del proceso del agente.
 
         Sin redundancias: config e input una sola vez al inicio,
@@ -520,7 +525,7 @@ class InstantLoop:
         lines.append(f"**Prompt**: {config.get('system_prompt')} | "
                      f"**Referencias**: {config.get('references_version')}")
         lines.append("")
-        lines.append(f"**Input**: {product}")
+        lines.append(f"**Input**: {input_prompt}")
         lines.append("")
 
         # Resumen rápido
@@ -625,7 +630,7 @@ class InstantLoop:
                 sanitized[k] = v
         return sanitized
 
-    def _build_debug_md(self, product: str, result: dict | None, trace: dict) -> str:
+    def _build_debug_md(self, input_prompt: str, result: dict | None, trace: dict) -> str:
         """Genera el markdown de debug con todos los detalles."""
         config = self._sanitize_config()
         lines = []
@@ -653,7 +658,7 @@ class InstantLoop:
         lines.append("")
         lines.append(f"| Métrica | Valor |")
         lines.append(f"|---------|-------|")
-        lines.append(f"| Input | {product[:200]} |")
+        lines.append(f"| Input | {input_prompt[:200]} |")
         lines.append(f"| Inicio | {trace['started_at']} |")
         lines.append(f"| Fin | {trace['completed_at']} |")
         lines.append(f"| Duración total | {trace['total_duration_s']}s |")
@@ -812,7 +817,7 @@ class InstantLoop:
 
         return "\n".join(lines)
 
-    def _build_debug_json(self, product: str, result: dict | None, trace: dict) -> dict:
+    def _build_debug_json(self, input_prompt: str, result: dict | None, trace: dict) -> dict:
         """Genera un JSON estructurado para lectura humana.
 
         Similar al execution.json pero con resúmenes y sin el historial
@@ -859,7 +864,7 @@ class InstantLoop:
 
         return {
             "config": config,
-            "input": {"product": product},
+            "input": {"prompt": input_prompt},
             "summary": {
                 "started_at": trace["started_at"],
                 "completed_at": trace["completed_at"],

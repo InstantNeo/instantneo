@@ -96,22 +96,21 @@ from instantneo.experimental.instant_loop import InstantLoop
 
 loop = InstantLoop(
     agent=agent,
-    prompt_template="Investiga sobre: {producto}\n\n{historial}",
     stop_tool="reportar_resultado",
     max_turns=10,
 )
 
-resultado = loop.run(product="lenguaje Python")
+resultado = loop.run(prompt="Investiga sobre el lenguaje Python")
 ```
 
 ## Cómo funciona el loop
 
-1. Construye el prompt reemplazando los placeholders del template (ej: `{producto}`) e inyectando `{historial}`.
-2. Llama a `agent.run(prompt, images=..., image_detail=...)`.
-3. Extrae las tools que el agente usó y lo que respondió.
-4. Acumula todo en el historial.
-5. Si el agente llamó a `stop_tool` → termina y devuelve los argumentos como resultado.
-6. Si no → vuelve al paso 1 con el historial actualizado.
+1. **Turno 1**: envía el prompt inicial al agente.
+2. Extrae las tools que el agente usó y lo que respondió.
+3. Acumula todo en el historial, marcando la instrucción inicial como `user:` y las respuestas del agente como `assistant:`.
+4. Si el agente llamó a `stop_tool` → termina y devuelve los argumentos como resultado.
+5. **Turno 2+**: envía solo el historial al agente (que ya incluye la instrucción inicial y todo lo que hizo).
+6. Repite desde el paso 2.
 7. Si se agotan los turnos (`max_turns`) → termina con error.
 
 ## Parámetros de InstantLoop
@@ -121,7 +120,6 @@ resultado = loop.run(product="lenguaje Python")
 | Parámetro | Tipo | Default | Descripción |
 | --- | --- | --- | --- |
 | `agent` | `InstantNeo` | *requerido* | Instancia configurada con tools y system prompt. |
-| `prompt_template` | `str` | *requerido* | Template del prompt con placeholders. Debe contener `{historial}` (reservado, se inyecta automáticamente con el historial acumulado entre turnos). Puede contener otros placeholders personalizados (ej: `{producto}`) que se reemplazan con el valor pasado a `run()`. |
 | `stop_tool` | `str` | `"report_classification"` | Nombre de la tool que señala fin del loop. Cuando el agente la llama, el loop termina y los argumentos de esa tool se devuelven como resultado. |
 | `max_turns` | `int` | `30` | Máximo de turnos antes de forzar parada. Si se alcanza, el resultado contiene un error indicando que el agente no llamó a la stop_tool. |
 | `debug_dir` | `str \| Path \| None` | `None` | Directorio base para archivos de debug. Por cada ejecución se crea una subcarpeta con timestamp y nombre de config. |
@@ -133,10 +131,10 @@ resultado = loop.run(product="lenguaje Python")
 ### run()
 
 ```python
-resultado = loop.run(product="texto del input")
+resultado = loop.run(prompt="Investiga sobre Python y Rust")
 ```
 
-El método `run()` recibe `product` (str) — el input principal que se inyecta en el placeholder `{producto}` del template.
+El método `run()` recibe `prompt` (str) — la instrucción inicial para el agente. Se envía solo en el primer turno. En los turnos siguientes el agente recibe solo el historial, que ya incluye esta instrucción marcada como `user:`.
 
 Retorna un dict con dos claves:
 
@@ -150,12 +148,13 @@ InstantLoop acepta imágenes igual que InstantNeo. Se envían en cada turno del 
 ```python
 loop = InstantLoop(
     agent=agent,
-    prompt_template="Analiza esta imagen: {producto}\n\n{historial}",
     stop_tool="reportar_analisis",
     max_turns=5,
     images=["ruta/a/imagen.jpg"],
     image_detail="high",
 )
+
+resultado = loop.run(prompt="Analiza la imagen adjunta y describe lo que ves.")
 ```
 
 > **Nota sobre reasoning**: Actualmente `reasoning` es un parámetro de `agent.run()`, no del constructor de InstantNeo. Debería poder prefijarse en el agente base para que InstantLoop y otros orquestadores lo hereden naturalmente. Ver [issue #23](https://github.com/InstantNeo/instantneo/issues/23).
@@ -199,7 +198,6 @@ El `trace` retornado por `loop.run()` tiene esta estructura:
 
 ## Notas
 
-- El `prompt_template` **debe** contener `{historial}`. Es el placeholder reservado donde el loop inyecta el historial acumulado entre turnos. Sin historial, el agente no tiene contexto de lo que ya hizo.
-- Los otros placeholders del template (ej: `{producto}`) se reemplazan con el valor de `product` pasado a `run()`.
 - InstantLoop es agnóstico al dominio. La lógica de negocio va en el system prompt, las `global_instructions` de las capabilities, y las tools.
 - Las `global_instructions` del `AgentCapabilities` son el lugar correcto para las instrucciones de uso de herramientas. El `role_setup` del agente define la identidad/rol, no las instrucciones operativas.
+- El prompt se envía solo en el primer turno. En los siguientes, el agente recibe el historial completo que ya incluye la instrucción original como `user:` y sus respuestas como `assistant:`.
