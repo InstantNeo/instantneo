@@ -56,3 +56,6 @@ test/*
 
 # Local development settings
 pyproject.toml
+
+# Test temp
+.test-temp/

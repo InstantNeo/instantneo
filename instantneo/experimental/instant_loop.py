@@ -1,7 +1,22 @@
 """InstantLoop — orquestador genérico de agente en loop.
 
-Corre un InstantNeo en un loop multi-turno con historial acumulado.
-No sabe de dominio — recibe configuración y produce resultado + trace.
+Corre cualquier InstantNeo en un loop multi-turno con historial acumulado.
+Agnóstico al dominio — recibe configuración y produce resultado + trace.
+
+Puede usarse con cualquier tipo de agente (investigador, clasificador,
+analista, etc.) simplemente cambiando las tools, el prompt template y
+la stop_tool.
+
+# TODO — Propuesta de Diego:
+# - Desacoplar la herramienta de historial para que pueda ser reutilizada
+#   y manejada en sistemas multiagente (donde varios agentes comparten o
+#   intercambian historial).
+# - Desacoplar el manejo de memoria para que pueda inyectarse externamente,
+#   permitiendo estrategias de memoria compartida, persistente o selectiva.
+# - Actualmente InstantLoop maneja historial y memoria internamente.
+#   Esto funciona para un agente solo, pero no es óptimo para arquitecturas
+#   más complejas y eficientes donde múltiples agentes colaboran o donde
+#   el historial necesita persistir entre sesiones.
 """
 
 import json
@@ -14,22 +29,31 @@ logger = logging.getLogger(__name__)
 
 
 class InstantLoop:
-    """Orquestador que corre un InstantNeo en loop con historial.
+    """Orquestador genérico que corre cualquier InstantNeo en loop con historial.
+
+    Ejecuta un agente InstantNeo en turnos sucesivos, acumulando historial
+    entre turnos, hasta que el agente llame a una tool de finalización
+    (stop_tool) o se agoten los turnos.
 
     Args:
         agent: Instancia de InstantNeo configurada con tools y system prompt.
-        prompt_template: Template del prompt con placeholders {producto}
-            y {historial}, reemplazados con str.replace cada turno.
+        prompt_template: Template del prompt con placeholders personalizados
+            y {historial}. El placeholder {historial} es reservado y se
+            inyecta automáticamente. Otros placeholders (ej: {producto}) se
+            reemplazan con el valor de `product` pasado a run().
         stop_tool: Nombre de la tool que señala fin del loop.
-            El resultado se extrae de te.arguments.
+            Cuando el agente la llama, el loop termina y los argumentos
+            de esa tool se devuelven como resultado.
         max_turns: Máximo de turnos antes de forzar parada.
         debug_dir: Directorio base para debug. Por cada run se crea una
             subcarpeta con timestamp y nombre de config.
         debug_run_dir: Carpeta de debug pre-creada. Si se pasa, se usa
             directamente sin crear subcarpeta. Tiene prioridad sobre debug_dir.
-            Útil para evals donde la carpeta por caso se crea externamente.
         agent_config: Dict de configuración del agente (se incluye en
             los archivos de debug para trazabilidad completa).
+        images: Imágenes para incluir en cada turno. Rutas a archivos
+            o URLs, igual que en InstantNeo.
+        image_detail: Nivel de detalle de las imágenes ("auto", "low", "high").
     """
 
     PRODUCTO_PLACEHOLDER = "{producto}"
@@ -44,6 +68,8 @@ class InstantLoop:
         debug_dir: str | Path | None = None,
         debug_run_dir: str | Path | None = None,
         agent_config: dict | None = None,
+        images: str | list[str] | None = None,
+        image_detail: str | None = None,
     ):
         self.agent = agent
         self.prompt_template = prompt_template
@@ -52,9 +78,11 @@ class InstantLoop:
         self.debug_dir = Path(debug_dir) if debug_dir else None
         self.debug_run_dir = Path(debug_run_dir) if debug_run_dir else None
         self.agent_config = agent_config or {}
+        self.images = images
+        self.image_detail = image_detail
 
     def run(self, product: str) -> dict:
-        """Ejecuta el loop completo para un producto.
+        """Ejecuta el loop completo.
 
         Returns:
             {"result": dict, "trace": dict} donde trace incluye turns,
@@ -97,7 +125,11 @@ class InstantLoop:
             # Retry con backoff para timeouts de API
             for attempt in range(3):
                 try:
-                    self.agent.run(prompt)
+                    self.agent.run(
+                        prompt,
+                        images=self.images,
+                        image_detail=self.image_detail,
+                    )
                     break
                 except Exception as e:
                     if attempt < 2 and "timed out" in str(e).lower():
@@ -277,7 +309,7 @@ class InstantLoop:
         }
 
     def _build_prompt(self, product: str, history: list[dict], turn_num: int) -> str:
-        """Construye el prompt inyectando producto e historial en el template."""
+        """Construye el prompt inyectando el input y el historial en el template."""
         history_block = self._format_history(history, turn_num)
         prompt = self.prompt_template.replace(self.PRODUCTO_PLACEHOLDER, product)
         prompt = prompt.replace(self.HISTORIAL_PLACEHOLDER, history_block)
@@ -472,7 +504,7 @@ class InstantLoop:
     def _build_agent_trace(self, product: str, result: dict | None, trace: dict) -> str:
         """Genera narrativa limpia del proceso del agente.
 
-        Sin redundancias: config y producto una sola vez al inicio,
+        Sin redundancias: config e input una sola vez al inicio,
         cada turno muestra solo el delta (respuesta + tools nuevas).
         Sin prompts completos — esos están en report.md/trace.json.
         """
@@ -488,7 +520,7 @@ class InstantLoop:
         lines.append(f"**Prompt**: {config.get('system_prompt')} | "
                      f"**Referencias**: {config.get('references_version')}")
         lines.append("")
-        lines.append(f"**Producto**: {product}")
+        lines.append(f"**Input**: {product}")
         lines.append("")
 
         # Resumen rápido
@@ -562,23 +594,21 @@ class InstantLoop:
         lines.append("## Resultado Final")
         lines.append("")
         if result:
-            conclusivo = result.get("is_conclusive", False)
-            subpartida = result.get("subpartida", "N/A")
-            icon = "✓" if conclusivo else "?"
-            lines.append(f"{icon} **Subpartida**: {subpartida}")
-            lines.append(f"  **Conclusivo**: {'sí' if conclusivo else 'no'}")
-            if result.get("descripcion_subpartida"):
-                lines.append(f"  **Descripción**: {result['descripcion_subpartida']}")
-            if result.get("analisis_producto"):
-                lines.append(f"  **Análisis**: {result['analisis_producto']}")
-            if result.get("ruta"):
-                lines.append("  **Ruta**:")
-                for paso in result["ruta"]:
-                    lines.append(f"    {paso.get('nivel', '?')}: {paso.get('codigo', '?')} — {paso.get('descripcion', '?')}")
-            if result.get("descartadas"):
-                lines.append("  **Descartadas**:")
-                for d in result["descartadas"]:
-                    lines.append(f"    {d.get('subpartida', '?')} — {d.get('motivo', '?')}")
+            for key, value in result.items():
+                if isinstance(value, list):
+                    lines.append(f"**{key}**:")
+                    for item in value:
+                        if isinstance(item, dict):
+                            parts = [f"{k}: {v}" for k, v in item.items()]
+                            lines.append(f"  - {', '.join(parts)}")
+                        else:
+                            lines.append(f"  - {item}")
+                elif isinstance(value, dict):
+                    lines.append(f"**{key}**:")
+                    for k, v in value.items():
+                        lines.append(f"  {k}: {v}")
+                else:
+                    lines.append(f"**{key}**: {value}")
         else:
             lines.append("*(sin resultado)*")
 
@@ -601,7 +631,7 @@ class InstantLoop:
         lines = []
 
         # Header
-        lines.append("# Debug: Ejecución del Agente Clasificador")
+        lines.append("# Debug: Ejecución del Agente")
         lines.append("")
 
         # Config
@@ -623,7 +653,7 @@ class InstantLoop:
         lines.append("")
         lines.append(f"| Métrica | Valor |")
         lines.append(f"|---------|-------|")
-        lines.append(f"| Producto | {product[:200]} |")
+        lines.append(f"| Input | {product[:200]} |")
         lines.append(f"| Inicio | {trace['started_at']} |")
         lines.append(f"| Fin | {trace['completed_at']} |")
         lines.append(f"| Duración total | {trace['total_duration_s']}s |")
