@@ -225,23 +225,41 @@ class VertexAuthMixin:
 
         raise RuntimeError("No hay método de autenticación configurado")
 
+    def _vertex_host(self) -> str:
+        """Host de Vertex AI según la location. `global` no lleva prefijo de región."""
+        if self.location == "global":
+            return "aiplatform.googleapis.com"
+        return f"{self.location}-aiplatform.googleapis.com"
+
     def _vertex_endpoint(self, publisher: str, model: str, action: str) -> str:
         """
-        Construye la URL del endpoint Vertex AI.
+        URL del endpoint per-publisher de Vertex AI (Anthropic, Gemini).
 
         Formato:
             https://{host}/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:{action}
-
-        Soporta location == "global" (sin prefijo de región en el host).
         """
-        if self.location == "global":
-            host = "aiplatform.googleapis.com"
-        else:
-            host = f"{self.location}-aiplatform.googleapis.com"
         return (
-            f"https://{host}/v1/"
+            f"https://{self._vertex_host()}/v1/"
             f"projects/{self.project_id}/locations/{self.location}/"
             f"publishers/{publisher}/models/{model}:{action}"
+        )
+
+    def _vertex_openai_compat_endpoint(self) -> str:
+        """
+        URL del endpoint OpenAI-compat de Vertex Model Garden.
+
+        Usado por providers que en Vertex se exponen vía la capa unificada
+        OpenAI chat/completions (xAI, Mistral, Llama, etc.). El modelo NO
+        va en la URL — va en el body con prefijo (`xai/grok-...`,
+        `meta/llama-...`).
+
+        Formato:
+            https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions
+        """
+        return (
+            f"https://{self._vertex_host()}/v1/"
+            f"projects/{self.project_id}/locations/{self.location}/"
+            f"endpoints/openapi/chat/completions"
         )
 
     def _build_vertex_headers(self) -> Dict[str, str]:

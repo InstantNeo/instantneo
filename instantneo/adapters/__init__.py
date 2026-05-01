@@ -41,3 +41,15 @@ try:
     __all__.append('VertexGeminiAdapter')
 except ImportError:
     VertexGeminiAdapter = None
+
+try:
+    from .xai_adapter import XAIAdapter
+    __all__.append('XAIAdapter')
+except ImportError:
+    XAIAdapter = None
+
+try:
+    from .vertex_xai_adapter import VertexXAIAdapter
+    __all__.append('VertexXAIAdapter')
+except ImportError:
+    VertexXAIAdapter = None
