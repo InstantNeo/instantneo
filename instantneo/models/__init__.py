@@ -3,6 +3,15 @@ Modelos de datos para proveedores de LLM.
 
 Este módulo contiene todos los tipos de datos (dataclasses) para interactuar
 con diferentes APIs de LLM, organizados por proveedor.
+
+NOTA SOBRE EL ORDEN DE IMPORTS:
+`models/groq.py` re-exporta tipos definidos en `models/_chat_completions.py`.
+Si algún día reordenas los imports de abajo, asegúrate de que
+`_chat_completions` (importado dentro de `groq.py`) puede cargar antes de
+que cualquier código fuera de `models/` empiece a tocar el paquete
+`instantneo.fetchers`. Romperlo causa un `ImportError` por ciclo:
+fetchers/__init__.py → fetchers/groq.py → models/groq.py (a medio cargar).
+Si necesitas verificar, corre `python tests/test_imports.py`.
 """
 
 # Tipos estándar (interfaz unificada Core <-> Adapters)
