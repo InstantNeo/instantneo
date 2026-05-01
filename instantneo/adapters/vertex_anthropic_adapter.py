@@ -8,7 +8,7 @@ solo cambia el cliente HTTP (VertexAnthropicClient en lugar de AnthropicClient).
 from typing import Optional, Dict, Any
 
 from instantneo.adapters.anthropic_adapter import AnthropicAdapter
-from instantneo.fetchers.vertex_anthropic import VertexAnthropicClient
+from instantneo.fetchers.vertex.anthropic import VertexAnthropicClient
 
 
 class VertexAnthropicAdapter(AnthropicAdapter):

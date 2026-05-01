@@ -1284,7 +1284,7 @@ Args:
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
             "cerebras": ("instantneo.adapters.cerebras_adapter", "CerebrasAdapter"),
             "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
-            "vertexai": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
+            "vertexai": ("instantneo.adapters.vertex_gemini_adapter", "VertexGeminiAdapter"),
             "vertex_anthropic": ("instantneo.adapters.vertex_anthropic_adapter", "VertexAnthropicAdapter"),
         }
 

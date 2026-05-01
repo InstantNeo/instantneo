@@ -35,3 +35,9 @@ try:
     __all__.append('VertexAnthropicAdapter')
 except ImportError:
     VertexAnthropicAdapter = None
+
+try:
+    from .vertex_gemini_adapter import VertexGeminiAdapter
+    __all__.append('VertexGeminiAdapter')
+except ImportError:
+    VertexGeminiAdapter = None

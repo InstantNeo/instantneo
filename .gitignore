@@ -59,3 +59,10 @@ pyproject.toml
 
 # Test temp
 .test-temp/
+
+# Excluir TODO archivo/carpeta que empiece con "." (sandbox local, credenciales, etc.)
+# Whitelist explícita debajo para los dotfiles que sí van al repo.
+.*
+!.gitignore
+!.github/
+!.env.example
