@@ -1,21 +1,21 @@
 # History — diseño y API
 
-Documento de la primera capa de la arquitectura event-sourced para InstantLoop: **el History**, sus **Entries** y sus **Vistas**. No incluye Triggers, Loop ni bridge — esas piezas se documentan por separado a medida que se cierren.
+Documento de la primera capa de la arquitectura event-sourced para InstantLoop: **el History**, sus **Entries** y sus **Vistas**. No incluye Triggers, Loop, bridge ni helpers — esas piezas se documentan por separado a medida que se cierran.
 
 ---
 
 ## Idea central
 
-El `History` es un log inmutable, append-only, donde **todo** lo que pasa en un run se guarda como `Entry`s atribuidas y temporalmente ordenadas. Es la única fuente de verdad de la arquitectura.
+El `History` es un log inmutable, append-only, donde se guardan `Entry`s atribuidas y temporalmente ordenadas. Es **agnóstico al dominio**: no sabe nada sobre agentes, loops, tools, prompts ni ningún concepto de aplicación. Solo guarda y devuelve.
 
-Las **vistas** son funciones puras registradas en una instancia de History que proyectan el log para un consumidor concreto (típicamente un agente). El History no sabe nada del agente; las vistas son la capa de presentación.
+Las **vistas** son funciones puras registradas en una instancia de History que proyectan el log para un consumidor concreto. La vista decide qué entries muestra y cómo. El History no impone nada sobre eso.
 
 **Reglas que sostienen el diseño:**
 
 - Nadie muta entries existentes. Las "modificaciones" son nuevas entries con `refs` apuntando a las afectadas.
 - El History es **pasivo**: no emite eventos, no notifica, no tiene observers. Solo guarda y devuelve.
 - Las vistas son **puras**: misma history → mismo output. Sin estado, sin side effects, sin I/O. Se ejecutan fresh cada vez.
-- El History **no valida** el `type` ni el shape de `content`. Convenciones documentadas, no enforcement por código.
+- El History **no valida** ni el `type` ni el shape de `content`. Strings y dicts libres. Las convenciones sobre qué types existen viven en la documentación de los consumidores que las definen (Loop, utils, código de usuario), no acá.
 
 ---
 
@@ -24,9 +24,9 @@ Las **vistas** son funciones puras registradas en una instancia de History que p
 ```python
 @dataclass(frozen=True)
 class Entry:
-    id: int                              # asignado por History al append
-    author: str                          # quién la creó: "agent_a", "M", "user", "orchestrator", ...
-    timestamp: float                     # asignado por History al append (time.time())
+    id: int                              # asignado por History (auto-increment, desde 1)
+    author: str                          # quién la creó: identificador libre
+    timestamp: float                     # cuándo se appendeó (default: time.time(), overrideable)
     type: str                            # qué clase de entry es. STRING ARBITRARIO
     content: dict = field(default_factory=dict)
     refs: tuple[int, ...] = ()           # ids de OTRAS entries que esta referencia/cubre/reemplaza
@@ -37,56 +37,22 @@ class Entry:
 ### Reglas
 
 - Inmutable (`frozen=True`). Una entry creada nunca cambia.
-- `id` y `timestamp` los asigna `History.append()`. El caller no los provee.
-- `author`, `type`, `content` los provee el caller.
-- `type` es un `str` arbitrario. La librería NO valida types — los users pueden inventar los suyos libremente.
-- `content` es un dict abierto. Su shape depende del `type` (convención, no enforcement).
+- `id` lo asigna `History.append()`, auto-incremental, empezando en 1. No overrideable.
+- `timestamp` por default lo asigna `History.append()` con `time.time()`. **Overrideable** vía kwarg para casos de import histórico, replay determinista o sincronización entre histories.
+- `author`, `type`, `content`, `refs` los provee el caller.
+- `type` es un `str` arbitrario. La librería NO valida. Cualquier string sirve. Las convenciones de qué types existen las define cada consumidor en su documentación.
+- `content` es un dict abierto. Su shape lo decide el productor. El History no impone schema.
 - `refs` es una tuple de ids de otras entries. Default `()`.
 - `to_dict()` produce serialización JSON-safe (con manejo defensivo de tipos no estándar dentro de `content`).
 
-### Convención canónica de `type` y `content`
+### Sobre el timestamp
 
-No enforzada por código. Es un acuerdo entre productores y consumidores nativos.
+`timestamp` representa **cuándo se appendeó la entry al History** — el momento de la escritura. NO representa eventos del dominio (e.g., "cuándo empezó el turno"). Si querés capturar momentos del dominio, eso es responsabilidad del productor: por ejemplo, un Loop puede appendear una entry tipo `step_start` con un campo `started_at` dentro de `content` que represente el momento real del inicio de su step.
 
-| `type` | `content` |
-|---|---|
-| `prompt` | `text`, opcional `images: [{url\|path\|blob_id, detail?}]` |
-| `response` | `text, step_num, finish_reason, usage, provider, model, duration_ms, reasoning, llm_calls` |
-| `tool_call` | `name, arguments (dict), result (nativo), exception, execution_mode, razonamiento, step_num` |
-| `summary` | `text` (+ `refs` apuntando a entries cubiertas), opcional `preserved_images` |
-| `redaction` | opcional `reason` (+ `refs` apuntando a entries ocultadas) |
-| `note` | `text`, opcional `addressed_to`, opcional `images` |
-| `step_start` | `step_num`, opcional `step_name`, opcional `tools_available` |
-| `step_end` | `step_num, duration_ms` |
-| `error` | `exception, exception_type, step_num` |
-| `stop_signal` | `reason` |
-| `run_start` | `run_id, started_at, max_steps, view_name, agent: {name, provider, model, system_prompt, tools_available}, trigger_names, extras` |
-| `run_end` | `completed_at, duration_s, terminated_reason` |
+Eso separa dos cosas claramente:
 
-### Imágenes
-
-Cualquier entry puede llevar `content["images"]: list[{url|path|blob_id, detail?}]`. La entry guarda **solo referencias**, nunca binarios. La conversión final (a base64 o URL pública) ocurre en el adapter del provider, no en la entry ni en la vista.
-
-### Constantes opcionales (`instantneo/history/types.py`)
-
-Para evitar typos en los types canónicos:
-
-```python
-RESPONSE     = "response"
-TOOL_CALL    = "tool_call"
-SUMMARY      = "summary"
-REDACTION    = "redaction"
-NOTE         = "note"
-STEP_START   = "step_start"
-STEP_END     = "step_end"
-ERROR        = "error"
-STOP_SIGNAL  = "stop_signal"
-PROMPT       = "prompt"
-RUN_START    = "run_start"
-RUN_END      = "run_end"
-```
-
-Uso opcional: `history.append(type=types.RESPONSE, ...)`. Los types custom siguen siendo strings libres (`history.append(type="bookmark", ...)`).
+- **Momento de escritura al log** (`Entry.timestamp`): siempre presente, asignado por History.
+- **Momentos del dominio** (semántica del consumidor): viven dentro de `content` con la semántica que el productor decida.
 
 ---
 
@@ -101,7 +67,8 @@ class History:
 
     # ── Storage de entries ─────────────────────────
     def append(self, *, author: str, type: str,
-               content: dict, refs: tuple[int, ...] = ()) -> Entry: ...
+               content: dict, refs: tuple[int, ...] = (),
+               timestamp: float | None = None) -> Entry: ...
     def get(self, id: int) -> Entry: ...
     def all(self) -> list[Entry]: ...
     def by_author(self, author: str) -> list[Entry]: ...
@@ -127,22 +94,22 @@ history = History()
 history = History(name="main")
 ```
 
-Sin más parámetros. Al instanciar, dos vistas built-in quedan pre-registradas (ver más abajo).
+Sin más parámetros. **Sin vistas pre-registradas** — `list_views()` retorna lista vacía hasta que el caller registre alguna.
 
 ### Storage
 
-- `append(author, type, content, refs=())`: asigna `id` (auto-incremental, empezando en 1) y `timestamp` (`time.time()`), retorna la `Entry` creada.
+- `append(...)`: asigna `id` auto-incremental y `timestamp = time.time()` salvo override. Retorna la `Entry` creada.
 - `get(id)`: levanta `KeyError` si no existe.
-- `all()`: lista en orden de `id` ascendente (= orden cronológico).
+- `all()`: lista en orden de `id` ascendente.
 - `by_author`, `by_type`: filtros simples sobre `all()`.
 - Sin `update`, sin `delete`. Inmutabilidad estricta.
 - Subclases para persistencia (`FileHistory`, `RedisHistory`, etc.) implementan la misma interface.
 
 ### Registry de vistas
 
-- `view(name)`: decorator. Internamente es `add_view(name, fn)`. Devuelve la función original, así que sigue siendo invocable directamente.
+- `view(name)`: decorator. Internamente es `add_view(name, fn)`. Devuelve la función original.
 - `add_view(name, fn)`: imperativo. Sobrescribe si ya existía una vista con ese nombre.
-- `export(name)`: ejecuta la función registrada pasándole `self` (el history), retorna lo que la función devuelve. Levanta `KeyError` si no existe la vista.
+- `export(name)`: ejecuta la función registrada pasándole `self` (el history), retorna lo que devuelve. Levanta `KeyError` si no existe.
 - `list_views()`: nombres de vistas registradas.
 - `has_view(name)`: bool.
 
@@ -162,32 +129,31 @@ Sin más parámetros. Al instanciar, dos vistas built-in quedan pre-registradas 
 View = Callable[[History], Any]
 ```
 
-Recibe el History entero, devuelve lo que el consumidor espera — típicamente `str` markdown o `list[dict]` de messages. Tipo de retorno libre; depende del consumidor.
+Recibe el History entero, devuelve lo que el consumidor espera. Tipo de retorno libre — puede ser `str`, `list[dict]`, un objeto custom, lo que haga falta.
 
 ### Dos formas equivalentes de registrar
 
 **(a) Decorator — para definición inline:**
 
 ```python
-@history.view("for_a")
-def for_a(history):
+@history.view("my_view")
+def my_view(history):
     entries = history.all()
-    entries = [e for e in entries if e.author in {"A", "M"}]
-    entries = apply_summaries(entries)
-    return markdown_format(entries)
+    # filtrar, transformar, formatear como sea
+    return ...
 ```
 
 **(b) Imperativo — para funciones reusables / importadas:**
 
 ```python
-def for_a(history):
+def my_view(history):
     ...
 
-history.add_view("for_a", for_a)
+history.add_view("my_view", my_view)
 
-# misma función registrable en múltiples histories:
-h1.add_view("for_a", for_a)
-h2.add_view("for_a", for_a)
+# misma función registrable en múltiples histories
+h1.add_view("my_view", my_view)
+h2.add_view("my_view", my_view)
 ```
 
 El decorator es azúcar sobre `add_view`:
@@ -205,119 +171,97 @@ def view(self, name):
 (No enforzadas por código, pero rotas a tu cuenta y riesgo.)
 
 - **Puras**: misma history → mismo output. Sin estado, sin side effects, sin I/O.
-- **Rápidas**: solo lectura del History y transformación. Nunca llamar a un LLM en una vista. Si hace falta trabajo caro, lo hace un Trigger que appendea entries; la vista solo proyecta lo que ya está.
-- **Filtran lo operacional**: las vistas que alimentan al agente deben excluir entries de tipo `step_start`, `step_end`, `error`, `stop_signal`, `run_start`, `run_end` salvo que el caso lo justifique. El agente típicamente no debería ver el "andamiaje" del run.
+- **Rápidas**: solo lectura del History y transformación. Si una vista necesita trabajo caro (e.g., correr un LLM), ese trabajo debe haber pasado antes (alguien lo appendeó como entry); la vista solo proyecta lo que ya está.
 
-### Vistas built-in pre-registradas
+### Vistas built-in
 
-Al instanciar `History()`, dos vistas vienen pre-registradas:
+**Ninguna.** El History no ship-ea vistas pre-registradas. Cada caller registra las que necesite.
 
-| Vista | Qué hace | Para qué |
-|---|---|---|
-| `raw` | Markdown de TODAS las entries, incluido lo operacional | Debug, audit |
-| `agent_default` | Filtra operacionales, aplica `apply_summaries` y `apply_redactions`, formato markdown | Default razonable para alimentar a un agente sin escribir vista custom |
+Cuando se documenten consumidores concretos (Loop, etc.), ese consumidor podrá pre-registrar las vistas que tenga sentido para su caso de uso (por ejemplo, una vista `loop_default` específica del Loop que se registra al instanciar el Loop).
 
-Cualquier user puede sobrescribir registrando con el mismo nombre:
+### Uso típico desde un consumidor
 
 ```python
-@history.view("agent_default")
-def my_default(history):
-    ...   # mi versión
+output = history.export("my_view")
 ```
-
-### Uso típico desde el orquestador
-
-```python
-markdown_str = history.export("for_a")
-```
-
-El orquestador (cuando lo definamos) recibe el nombre de la vista en su constructor y llama `history.export(view)` cada turno para armar el prompt del agente.
 
 ### Queries directas sin vista
 
-Una vista produce output formateado para un consumidor. Para queries de código (debug, triggers, etc.), no hace falta una vista — la API directa del History alcanza:
+Para queries de código (debug, custom logic, lecturas internas), no hace falta una vista — la API directa del History alcanza:
 
 ```python
-history.all()                                 # todas las entries
-history.get(42)                               # una específica
+history.all()
+history.get(42)
 history.by_author("M")
 history.by_type("summary")
-[e for e in history.all() if 17 in e.refs]    # comprehension custom
+[e for e in history.all() if 17 in e.refs]
 ```
 
-Si querés salir del proceso Python (jq, dashboards), `history.to_json()` o `history.to_dicts()`.
+Si querés salir del proceso Python (jq, dashboards, etc.), `history.to_json()` o `history.to_dicts()`.
 
 ---
 
-## Helpers opt-in (no parte del core)
+## Ejemplos
 
-Las vistas built-in y los ejemplos hacen referencia a funciones como `apply_summaries`, `apply_redactions`, `markdown_format`, `messages_format`. Estas son **convenience opinionada**, no parte del core. Viven en `instantneo/history/utils.py` (o segmentado en submódulos si crece).
-
-Lo que ship-eamos en utils, lista cerrada inicial:
-
-- `apply_summaries`, `apply_redactions` — lógica de refs no trivial.
-- `markdown_format`, `messages_format` — formatos de salida.
-
-Cualquier otro patrón (filtros por autor, ventanas, queries específicas) lo escribe el user inline mientras no aparezca repetido en código real. Si más adelante un patrón se vuelve común, se promueve a `utils.py`.
-
-**Nada del core de History exige usar utils.** Un user que quiera escribir vistas y consumir el History sin importar nada de utils puede hacerlo y la librería sigue funcionando.
-
----
-
-## Ejemplos de uso
-
-### Caso mínimo: sin helpers, todo inline
+### Caso mínimo — registro y consulta
 
 ```python
 from instantneo.history import History
 
 history = History()
 
+history.append(author="user", type="message", content={"text": "hola"})
+history.append(author="A", type="response", content={"text": "hola, ¿en qué te ayudo?"})
+
+print(history.all())
+# [Entry(id=1, author="user", ...), Entry(id=2, author="A", ...)]
+
+print(history.to_json())
+# JSON dump completo
+```
+
+### Vista custom
+
+```python
 @history.view("simple")
 def simple(history):
     entries = history.all()
     return "\n".join(
         f"[{e.author}] {e.content.get('text', '')}"
         for e in entries
-        if e.type in {"prompt", "response"}
     )
-
-history.append(author="user", type="prompt", content={"text": "hola"})
-history.append(author="A", type="response", content={"text": "hola, ¿en qué te ayudo?"})
 
 print(history.export("simple"))
 # [user] hola
 # [A] hola, ¿en qué te ayudo?
 ```
 
-### Caso con utils
+### Override de timestamp (import histórico, replay, sincronización)
 
 ```python
-from instantneo.history import History
-from instantneo.history.utils import apply_summaries, apply_redactions, markdown_format
+import time
 
-history = History()
-
-@history.view("for_a")
-def for_a(history):
-    entries = history.all()
-    entries = [e for e in entries
-               if e.type in {"response", "tool_call", "summary", "note"}]
-    entries = [e for e in entries if e.author in {"A", "M"}]
-    entries = apply_redactions(entries)
-    entries = apply_summaries(entries)
-    return markdown_format(entries)
+# Importar una entry "histórica" con timestamp real
+history.append(
+    author="legacy_system", type="event",
+    content={"data": ...},
+    timestamp=time.time() - 3600,   # hace una hora
+)
 ```
 
-### Vistas built-in directas
+### Refs y queries por relación
 
 ```python
-history = History()
-# ... appendear entries ...
+history.append(author="user", type="message", content={"text": "primero"})
+history.append(author="user", type="message", content={"text": "segundo"})
+history.append(
+    author="M", type="reaction",
+    content={"sentiment": "positive"},
+    refs=(1, 2),     # esta entry se refiere a las dos primeras
+)
 
-print(history.list_views())                    # ['raw', 'agent_default']
-debug_dump = history.export("raw")             # todo, para debug
-agent_prompt = history.export("agent_default") # filtrado y formateado
+# Encontrar entries que referencian la id 1
+[e for e in history.all() if 1 in e.refs]
 ```
 
 ---
@@ -328,25 +272,26 @@ Tests por método, todos puros sobre instancias de `History`:
 
 - `test_append_assigns_id_and_timestamp`
 - `test_append_returns_created_entry`
+- `test_append_accepts_timestamp_override`
 - `test_get_raises_on_missing`
-- `test_all_returns_chronological`
+- `test_all_returns_chronological_by_id`
 - `test_by_author`, `test_by_type`
 - `test_view_decorator_registers_function`
 - `test_add_view_imperative_equivalent`
+- `test_add_view_overrides_existing`
 - `test_export_runs_function_with_history`
 - `test_export_raises_on_unknown_view`
-- `test_list_views_includes_built_ins`
-- `test_built_in_view_raw_includes_all_types`
-- `test_built_in_view_agent_default_filters_operational`
+- `test_list_views_empty_initially`
 - `test_to_json_roundtrip`
+- `test_to_dicts_roundtrip`
 - `test_entries_are_immutable`
 
 ---
 
 ## Pendiente (a documentar en próximas vueltas)
 
-- **Trigger** y su API (Conditions, Actions, evaluación).
-- **Bridge** `run_info_to_entries` para conectar `InstantNeo` al History.
-- **InstantLoop** refactor: cómo orquesta History + vistas + triggers.
-- **Helpers** detallados: contenido y signaturas de las funciones de `utils.py`.
-- **Estrategia de branching y migración** desde el `instant_loop.py` actual.
+- **Bridge** `run_info_to_entries`: cuáles son los types que produce desde `RunInfo` (probablemente `response`, `tool_call`, posiblemente `error`). Pertenece a la sección del Loop.
+- **Trigger** y su API: Conditions, Actions, evaluación entre steps.
+- **InstantLoop** refactor: cómo orquesta History + vistas + triggers, qué types operacionales emite (probablemente `step_start`, `step_end`, etc.), si pre-registra una vista `loop_default`.
+- **Helpers** (`apply_summaries`, `apply_redactions`, formats, etc.): biblioteca opt-in. Allí se documentan los types convencionales que esos helpers consumen.
+- **Estrategia de migración** desde el `instant_loop.py` actual.
