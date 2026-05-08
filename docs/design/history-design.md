@@ -1,6 +1,6 @@
 # History — diseño y API
 
-Documento de la primera capa de la arquitectura event-sourced para InstantLoop: **el History**, sus **Entries** y sus **Vistas**. No incluye Triggers, Loop, bridge ni helpers — esas piezas se documentan por separado a medida que se cierran.
+Documento de la primera capa de la arquitectura event-sourced para InstantLoop: **el History**, sus **Entries**, sus **Vistas** y la integración con **Monitor**. No incluye el Loop, el bridge ni los helpers — esas piezas se documentan por separado a medida que se cierran. La API del Monitor en sí vive en `monitor-design.md`.
 
 ---
 
@@ -58,11 +58,13 @@ Eso separa dos cosas claramente:
 
 ## History — el container
 
-Pasivo. Storage de entries + registry de vistas. Sin estado fuera de lo que appendea el caller.
+Pasivo. Storage de entries + registry de vistas + un Monitor asociado. Sin estado fuera de lo que appendea el caller.
 
 ```python
 class History:
-    def __init__(self, name: str | None = None):
+    def __init__(self,
+                 name: str | None = None,
+                 monitors: "Monitor | list[Monitor] | None" = None):
         ...
 
     # ── Storage de entries ─────────────────────────
@@ -81,6 +83,11 @@ class History:
     def list_views(self) -> list[str]: ...
     def has_view(self, name: str) -> bool: ...
 
+    # ── Monitor (proxies sobre self.monitor) ───────
+    monitor: "Monitor"                                # siempre existe
+    def register_rule(self, when, do) -> None: ...    # proxy a self.monitor.register_rule
+    def evaluate_monitor(self) -> None: ...           # equivale a self.monitor.evaluate(self)
+
     # ── Serialización ──────────────────────────────
     def to_json(self) -> str: ...
     def to_dicts(self) -> list[dict]: ...
@@ -92,9 +99,14 @@ class History:
 history = History()
 # o con un nombre opcional para debug / multi-history
 history = History(name="main")
+# o pasándole monitors al construir (ver más abajo)
+history = History(monitors=my_monitor)
+history = History(monitors=[mon_a, mon_b])
 ```
 
-Sin más parámetros. **Sin vistas pre-registradas** — `list_views()` retorna lista vacía hasta que el caller registre alguna.
+**Sin vistas pre-registradas** — `list_views()` retorna lista vacía hasta que el caller registre alguna.
+
+Sobre `monitors`: ver la sección dedicada más abajo.
 
 ### Storage
 
@@ -198,6 +210,67 @@ history.by_type("summary")
 ```
 
 Si querés salir del proceso Python (jq, dashboards, etc.), `history.to_json()` o `history.to_dicts()`.
+
+---
+
+## Monitor — observación reactiva
+
+Cada History viene con un **Monitor** asociado en el atributo `history.monitor`. El Monitor tiene reglas `(when, do)` que el orquestador (típicamente un Loop) evalúa entre steps; las reglas que matchean disparan acciones que normalmente appendean nuevas entries.
+
+La API del Monitor en sí está documentada en `monitor-design.md`. Acá se documenta solo la integración con History.
+
+### Cómo se inserta un Monitor
+
+Al construir el History, vía el parámetro `monitors`. Tres casos, mismo pattern que `InstantNeo(tools=...)`:
+
+```python
+# Caso 1: una instance de Monitor → asignación directa
+history = History(monitors=my_monitor)
+# history.monitor IS my_monitor (mismo objeto, mutaciones se propagan)
+
+# Caso 2: lista de monitors → se unen vía MonitorOperations.union
+history = History(monitors=[monitor_a, monitor_b])
+# history.monitor es un Monitor nuevo (snapshot estático de las reglas)
+
+# Caso 3: nada → Monitor() vacío por default
+history = History()
+# history.monitor existe igualmente, pero sin reglas
+```
+
+`history.monitor` **siempre existe**, garantizado.
+
+### Proxies en History
+
+Para ergonomía del caso simple, History expone dos métodos que delegan al Monitor:
+
+```python
+history.register_rule(when, do)
+# equivale a:
+history.monitor.register_rule(when, do)
+
+history.evaluate_monitor()
+# equivale a:
+history.monitor.evaluate(history)
+```
+
+Es legal usar cualquiera de las dos formas; son la misma operación.
+
+### Compartir Monitors entre Histories
+
+Como una `Monitor` instance puede attacharse a múltiples Histories vía el caso 1, podés definir un Monitor una vez y reusarlo:
+
+```python
+shared = Monitor()
+shared.register_rule(when_type_present("error"), stop_with("err"))
+
+h1 = History(monitors=shared)
+h2 = History(monitors=shared)
+# Ambas comparten el mismo Monitor. Mutarlo afecta a las dos.
+```
+
+### Cuándo se invoca evaluate_monitor()
+
+Un Loop (cuando se documente) llamará `history.evaluate_monitor()` al final de cada step, después de que el agente y el bridge appendeen sus entries. Pero el `evaluate_monitor()` es público y agnóstico — cualquier orquestador o test puede invocarlo cuando necesite.
 
 ---
 
