@@ -386,6 +386,9 @@ class GeminiAdapter(BaseAdapter):
                 input_tokens=response.usage_metadata.prompt_token_count,
                 output_tokens=response.usage_metadata.candidates_token_count,
                 total_tokens=response.usage_metadata.total_token_count,
+                # Gemini 2.5+ expone thoughts_token_count en usage_metadata.
+                # Para modelos anteriores el atributo no existe; getattr → None.
+                reasoning_tokens=getattr(response.usage_metadata, 'thoughts_token_count', None),
             ),
             finish_reason=self._translate_finish_reason(candidate.finish_reason),
             raw_response=response,
@@ -442,6 +445,8 @@ class GeminiAdapter(BaseAdapter):
                 input_tokens=usage_data.get("promptTokenCount", 0),
                 output_tokens=usage_data.get("candidatesTokenCount", 0),
                 total_tokens=usage_data.get("totalTokenCount", 0),
+                # Gemini 2.5+ raw API: thoughtsTokenCount.
+                reasoning_tokens=usage_data.get("thoughtsTokenCount"),
             )
 
         # Si no hay contenido relevante, retornar None

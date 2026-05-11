@@ -370,11 +370,24 @@ class OpenAIAdapter(BaseAdapter):
             index=0,
         )
 
-        # Traducir usage (OpenAI usa prompt_tokens y completion_tokens)
+        # Traducir usage (OpenAI usa prompt_tokens y completion_tokens).
+        # reasoning_tokens viene en output_tokens_details.reasoning_tokens
+        # (Responses API) o completion_tokens_details.reasoning_tokens
+        # (Chat Completions API) según versión del SDK — probamos ambos.
+        reasoning_tokens = None
+        if response.usage:
+            output_details = getattr(response.usage, 'output_tokens_details', None)
+            completion_details = getattr(response.usage, 'completion_tokens_details', None)
+            if output_details is not None:
+                reasoning_tokens = getattr(output_details, 'reasoning_tokens', None)
+            if reasoning_tokens is None and completion_details is not None:
+                reasoning_tokens = getattr(completion_details, 'reasoning_tokens', None)
+
         usage = StandardUsage(
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             total_tokens=response.usage.total_tokens if response.usage else 0,
+            reasoning_tokens=reasoning_tokens,
         )
 
         return StandardResponse(
@@ -439,10 +452,12 @@ class OpenAIAdapter(BaseAdapter):
         usage = None
         if "usage" in chunk:
             usage_data = chunk["usage"]
+            output_details = usage_data.get("output_tokens_details") or {}
             usage = StandardUsage(
                 input_tokens=usage_data.get("input_tokens", 0),
                 output_tokens=usage_data.get("output_tokens", 0),
                 total_tokens=usage_data.get("total_tokens", 0),
+                reasoning_tokens=output_details.get("reasoning_tokens"),
             )
 
         # Si no hay contenido relevante, retornar None

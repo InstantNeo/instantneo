@@ -276,6 +276,10 @@ class CerebrasAdapter(BaseAdapter):
                     input_tokens=response.usage.prompt_tokens,
                     output_tokens=response.usage.completion_tokens,
                     total_tokens=response.usage.total_tokens,
+                    reasoning_tokens=getattr(
+                        getattr(response.usage, 'completion_tokens_details', None),
+                        'reasoning_tokens', None,
+                    ),
                 ),
                 finish_reason="error",
                 raw_response=response,
@@ -318,6 +322,10 @@ class CerebrasAdapter(BaseAdapter):
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
                 total_tokens=response.usage.total_tokens,
+                reasoning_tokens=getattr(
+                    getattr(response.usage, 'completion_tokens_details', None),
+                    'reasoning_tokens', None,
+                ),
             ),
             finish_reason=choice.finish_reason,
             raw_response=response,
@@ -339,10 +347,12 @@ class CerebrasAdapter(BaseAdapter):
         usage = None
         if "usage" in chunk and chunk["usage"]:
             usage_data = chunk["usage"]
+            completion_details = usage_data.get("completion_tokens_details") or {}
             usage = StandardUsage(
                 input_tokens=usage_data.get("prompt_tokens", 0),
                 output_tokens=usage_data.get("completion_tokens", 0),
                 total_tokens=usage_data.get("total_tokens", 0),
+                reasoning_tokens=completion_details.get("reasoning_tokens"),
             )
 
         return StandardStreamChunk(

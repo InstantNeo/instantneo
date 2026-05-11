@@ -84,6 +84,26 @@ class RunParams(BaseParams):
 
         return run_params
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Snapshot completo de los kwargs efectivos del run.
+
+        Diseñado para alimentar ``RunInfo.run_params`` y, vía el bridge,
+        quedar reflejado en ``Entry(type="response").content["run_params"]``.
+
+        Incluye todos los campos del dataclass excepto:
+
+        - ``prompt``: vive aparte en ``RunInfo.prompt``, no duplicar.
+        - ``additional_params``: se spreadea al top level (es lo que
+          espera el consumidor del snapshot — kwargs planos, no anidados).
+
+        Si querés ver exactamente qué pasó (e.g. ``reasoning="high"``,
+        ``image_detail="low"``, kwargs custom), todo aparece acá.
+        """
+        EXCLUDE = {"prompt", "additional_params"}
+        result = {k: v for k, v in self.__dict__.items() if k not in EXCLUDE}
+        result.update(self.additional_params)
+        return result
+
 
 @dataclass
 class AdapterParams(BaseParams):
@@ -655,17 +675,7 @@ Args:
             stream=run_params.stream,
             timestamp=datetime.now(timezone.utc).isoformat(),
             messages_sent=messages,
-            run_params={
-                "model": run_params.model,
-                "temperature": run_params.temperature,
-                "max_tokens": run_params.max_tokens,
-                "presence_penalty": run_params.presence_penalty,
-                "frequency_penalty": run_params.frequency_penalty,
-                "stop": run_params.stop,
-                "seed": run_params.seed,
-                "execution_mode": run_params.execution_mode,
-                "stream": run_params.stream,
-            },
+            run_params=run_params.to_dict(),
         )
 
         start_time = time.perf_counter()
@@ -969,6 +979,7 @@ Args:
                             "input_tokens": chunk.usage.input_tokens,
                             "output_tokens": chunk.usage.output_tokens,
                             "total_tokens": chunk.usage.total_tokens,
+                            "reasoning_tokens": getattr(chunk.usage, "reasoning_tokens", None),
                         }
                         run_info.usage = llm_call.usage
 
@@ -1007,10 +1018,13 @@ Args:
                     # Capture usage from final chunk if present
                     if 'usage' in chunk_data and chunk_data['usage']:
                         usage_data = chunk_data['usage']
+                        completion_details = usage_data.get('completion_tokens_details') or {}
+                        output_details     = usage_data.get('output_tokens_details') or {}
                         llm_call.usage = {
                             "input_tokens": usage_data.get('prompt_tokens', usage_data.get('input_tokens', 0)),
                             "output_tokens": usage_data.get('completion_tokens', usage_data.get('output_tokens', 0)),
                             "total_tokens": usage_data.get('total_tokens', 0),
+                            "reasoning_tokens": completion_details.get('reasoning_tokens') or output_details.get('reasoning_tokens'),
                         }
                         run_info.usage = llm_call.usage
                 else:
@@ -1220,6 +1234,7 @@ Args:
                 "input_tokens": usage.input_tokens if hasattr(usage, 'input_tokens') else 0,
                 "output_tokens": usage.output_tokens if hasattr(usage, 'output_tokens') else 0,
                 "total_tokens": usage.total_tokens if hasattr(usage, 'total_tokens') else 0,
+                "reasoning_tokens": getattr(usage, "reasoning_tokens", None),
             }
             run_info.usage = llm_call.usage
 
