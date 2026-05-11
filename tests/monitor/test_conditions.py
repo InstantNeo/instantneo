@@ -16,6 +16,7 @@ from instantneo.monitor.conditions import (
     when_entry_count_above, when_type_count_above, when_author_count_above,
     when_type_present, when_last_is_type, when_last_is_author,
     when_last_content_matches, when_tokens_above,
+    when_last_tool_called,
     every_n_steps, at_step,
     And, Or, Not,
 )
@@ -122,6 +123,40 @@ def test_when_last_content_matches_with_predicate() -> None:
 
 def test_when_last_content_matches_on_empty_history() -> None:
     assert when_last_content_matches(lambda c: True)(History()) is False
+
+
+# ════════════════════════════════════════════════════════════════════
+# when_last_tool_called (PR 8) — base del sugar stop_tool
+# ════════════════════════════════════════════════════════════════════
+
+def test_when_last_tool_called_match() -> None:
+    h = History()
+    h.append(author="agent", type="tool_call",
+             content={"name": "finalizar", "arguments": {}})
+    assert when_last_tool_called("finalizar")(h) is True
+
+
+def test_when_last_tool_called_no_match() -> None:
+    h = History()
+    h.append(author="agent", type="tool_call",
+             content={"name": "otra_tool", "arguments": {}})
+    assert when_last_tool_called("finalizar")(h) is False
+
+
+def test_when_last_tool_called_no_tool_calls() -> None:
+    """Sin entries tool_call, False (no crash)."""
+    h = History()
+    h.append(author="user", type="message", content={"text": "hi"})
+    assert when_last_tool_called("anything")(h) is False
+
+
+def test_when_last_tool_called_takes_latest() -> None:
+    """Si hay varias tool_calls, mira la última."""
+    h = History()
+    h.append(author="agent", type="tool_call", content={"name": "first"})
+    h.append(author="agent", type="tool_call", content={"name": "second"})
+    assert when_last_tool_called("second")(h) is True
+    assert when_last_tool_called("first")(h) is False
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -288,6 +323,10 @@ if __name__ == "__main__":
         ("when_last_is_author_on_empty_history",   test_when_last_is_author_on_empty_history),
         ("when_last_content_matches_with_predicate", test_when_last_content_matches_with_predicate),
         ("when_last_content_matches_on_empty_history", test_when_last_content_matches_on_empty_history),
+        ("when_last_tool_called_match",                test_when_last_tool_called_match),
+        ("when_last_tool_called_no_match",             test_when_last_tool_called_no_match),
+        ("when_last_tool_called_no_tool_calls",        test_when_last_tool_called_no_tool_calls),
+        ("when_last_tool_called_takes_latest",         test_when_last_tool_called_takes_latest),
         ("when_tokens_above_default_tokenizer",    test_when_tokens_above_default_tokenizer),
         ("when_tokens_above_custom_tokenizer",     test_when_tokens_above_custom_tokenizer),
         ("every_n_steps_true_at_multiple",         test_every_n_steps_true_at_multiple),

@@ -92,6 +92,27 @@ def when_last_content_matches(predicate: Callable[[dict], bool]) -> "Condition":
     return cond
 
 
+def when_last_tool_called(name: str) -> "Condition":
+    """True cuando la última entry ``tool_call`` tiene ``content["name"] == name``.
+
+    Útil para el patrón "parar cuando el agente llamó tal tool". Es la
+    base del sugar ``stop_tool`` en ``InstantLoop``.
+
+    Devuelve ``False`` si no hay entries ``tool_call`` aún en el History,
+    o si la última tool_call fue una distinta.
+
+    Args:
+        name: nombre exacto de la tool (case-sensitive).
+    """
+    def cond(history: "History") -> bool:
+        tool_calls = history.by_type("tool_call")
+        if not tool_calls:
+            return False
+        last = tool_calls[-1]
+        return last.content.get("name") == name
+    return cond
+
+
 # ════════════════════════════════════════════════════════════════════
 # Condition sobre tokens (asume vista registrada)
 # ════════════════════════════════════════════════════════════════════
