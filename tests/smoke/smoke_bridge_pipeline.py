@@ -36,7 +36,7 @@ from instantneo.history.queries import current_run_config
 
 # (provider, model, env_var_name)
 PROVIDERS = [
-    ("openai",    "gpt-4o-mini",        "OPEN_AI_API_KEY"),
+    ("openai",    "gpt-5-mini",         "OPEN_AI_API_KEY"),
     ("anthropic", "claude-haiku-4-5",   "ANTHROPIC_API_KEY"),
     ("gemini",    "gemini-2.5-flash",   "GEMINI_API_KEY"),
     ("groq",      "llama-3.3-70b-versatile", "GROQ_API_KEY"),
@@ -53,6 +53,17 @@ def get_time() -> dict:
     return {"now": "2026-05-11T12:00:00Z", "tz": "UTC"}
 
 
+# Tokens en errores de API que indican issue de cuenta/billing, no bug
+# del código. Distinguen "skip por provider down" de "FAIL real".
+_BILLING_ERROR_TOKENS = ("credit balance", "billing", "quota exceeded",
+                          "insufficient_quota", "payment", "account_inactive")
+
+
+def _is_billing_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(tok in msg for tok in _BILLING_ERROR_TOKENS)
+
+
 # ────────────────────────────────────────────────────────────────────
 # Casos
 # ────────────────────────────────────────────────────────────────────
@@ -64,9 +75,12 @@ def case_response_only(provider: str, model: str, api_key: str) -> bool:
         role_setup="Sos un asistente conciso.",
     )
     try:
-        text = agent.run("Decí 'listo' y nada más.",
-                         max_tokens=30, temperature=0.0)
+        # max_tokens generoso porque reasoning models (gpt-5*, o4*)
+        # consumen budget en thinking interno y dejan poco para output.
+        text = agent.run("Decí 'listo' y nada más.", max_tokens=300)
     except Exception as e:
+        if _is_billing_error(e):
+            raise  # propagar para que el outer lo marque como BILLING_SKIP
         print(f"      [A] LLM call failed: {type(e).__name__}: {e}")
         return False
 
@@ -100,8 +114,10 @@ def case_response_with_tool(provider: str, model: str, api_key: str) -> bool:
         tools=[get_time],
     )
     try:
-        agent.run("¿Qué hora es?", max_tokens=80, temperature=0.0)
+        agent.run("¿Qué hora es?", max_tokens=400)
     except Exception as e:
+        if _is_billing_error(e):
+            raise
         print(f"      [B] LLM call failed: {type(e).__name__}: {e}")
         return False
 
@@ -136,8 +152,10 @@ def case_queries_post_bridge(provider: str, model: str, api_key: str) -> bool:
         role_setup="Sos conciso.",
     )
     try:
-        agent.run("Decí 'ok'.", max_tokens=20, temperature=0.0)
+        agent.run("Decí 'ok'.", max_tokens=200)
     except Exception as e:
+        if _is_billing_error(e):
+            raise
         print(f"      [C] LLM call failed: {type(e).__name__}: {e}")
         return False
 
@@ -177,6 +195,7 @@ def main() -> int:
             continue
 
         cases_ok = 0
+        billing_skip = False
         for case_name, case_fn in [
             ("A", case_response_only),
             ("B", case_response_with_tool),
@@ -189,9 +208,17 @@ def main() -> int:
                     cases_ok += 1
                     total_pass += 1
             except Exception as e:
-                print(f"      [{case_name}] EXCEPTION: {type(e).__name__}: {e}")
+                if _is_billing_error(e):
+                    print(f"      [{case_name}] BILLING SKIP: {str(e)[:80]}")
+                    billing_skip = True
+                    total_run -= 1   # no contar como caso ejecutado
+                else:
+                    print(f"      [{case_name}] EXCEPTION: {type(e).__name__}: {e}")
 
-        results.append((provider, f"{cases_ok}/3"))
+        if billing_skip and cases_ok == 0:
+            results.append((provider, "BILLING_SKIP"))
+        else:
+            results.append((provider, f"{cases_ok}/3"))
 
     print("\n" + "=" * 60)
     print("Resumen:")
