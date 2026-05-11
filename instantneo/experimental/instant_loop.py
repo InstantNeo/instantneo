@@ -1,31 +1,55 @@
 """InstantLoop — orquestador genérico de agente en loop.
 
+.. deprecated:: v2 (PR 8)
+   Este módulo es la implementación legacy de InstantLoop. Está
+   **deprecada** desde v2. Usá la versión nueva:
+
+       from instantneo import InstantLoop
+
+   que vive en ``instantneo/loop/instant_loop.py``. La nueva está
+   construida sobre la arquitectura event-sourced del v2 (History,
+   Monitor, Bridge, RunLog). Ver ``docs/design/loop-design.md``.
+
+   Diferencias clave:
+
+   - History como log inmutable append-only en lugar de manejo interno.
+   - Monitor reactivo para conditions/actions custom.
+   - Stop conditions múltiples (stop_signal, stop_tool sugar,
+     loop.stop() externo, view stop_reason, max_steps).
+   - RunLog separado del History (opt-in via debug=True).
+   - Args y results de tools quedan tipados (no stringificados).
+
+   Esta versión se mantiene un release ciclo más para callers pinneados
+   a un SHA; será eliminada en una release menor futura.
+
 Corre cualquier InstantNeo en un loop multi-turno con historial acumulado.
 Agnóstico al dominio — recibe configuración y produce resultado + trace.
 
 Puede usarse con cualquier tipo de agente (investigador, clasificador,
 analista, etc.) simplemente cambiando las tools, el prompt template y
 la stop_tool.
-
-# TODO — Propuesta de Diego:
-# - Desacoplar la herramienta de historial para que pueda ser reutilizada
-#   y manejada en sistemas multiagente (donde varios agentes comparten o
-#   intercambian historial).
-# - Desacoplar el manejo de memoria para que pueda inyectarse externamente,
-#   permitiendo estrategias de memoria compartida, persistente o selectiva.
-# - Actualmente InstantLoop maneja historial y memoria internamente.
-#   Esto funciona para un agente solo, pero no es óptimo para arquitecturas
-#   más complejas y eficientes donde múltiples agentes colaboran o donde
-#   el historial necesita persistir entre sesiones.
 """
 
 import json
 import logging
 import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Emitir DeprecationWarning al cargar el módulo. Stacklevel=2 para
+# que apunte al import del caller, no a esta línea.
+warnings.warn(
+    "instantneo.experimental.instant_loop está deprecado desde v2. "
+    "Usá `from instantneo import InstantLoop` en su lugar (v2 — "
+    "event-sourced, con History/Monitor/Bridge/RunLog). "
+    "Ver docs/design/loop-design.md. Esta versión se mantiene un "
+    "release más por compatibilidad y será eliminada después.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 class InstantLoop:

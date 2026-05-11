@@ -1,5 +1,42 @@
 # InstantLoop — Orquestador multi-turno para InstantNeo
 
+> ## ⚠️ DEPRECADO desde v2
+>
+> Este módulo es la **implementación legacy** de InstantLoop. Está deprecada.
+> Usá la versión nueva, accesible desde el top-level:
+>
+> ```python
+> from instantneo import InstantLoop, History, Monitor
+> from instantneo.monitor.actions import stop_signal
+> ```
+>
+> La nueva versión vive en `instantneo/loop/` y está construida sobre la arquitectura
+> event-sourced del v2 (History inmutable, Monitor reactivo, Bridge `RunInfo→Entries`,
+> RunLog opt-in). Ver:
+>
+> - `docs/design/loop-design.md` — diseño del Loop nuevo.
+> - `docs/design/history-design.md` — la capa History.
+> - `docs/design/monitor-design.md` — el rule engine Monitor.
+> - `docs/design/runinfo-to-entries.md` — bridge.
+> - `docs/design/log-design.md` — RunLog (Capa 1 + Capa 2).
+>
+> Mejoras respecto del legacy:
+>
+> - **Args y results de tools quedan tipados** (dict/list/native), no stringificados.
+> - **Reasoning content del modelo accesible** en las entries, no escondido en archivos de debug.
+> - **Reasoning tokens propagados** cuando el provider los da (PR 4).
+> - **Stop conditions múltiples y combinables**: stop_signal (Monitor), stop_tool sugar,
+>   loop.stop() externo, view stop_reason, max_steps.
+> - **Multi-loop sobre el mismo History** soportado nativamente.
+> - **debug=True genera un RunLog** separado del History (lean) con todo el detalle
+>   forense persistido a disco turn-by-turn.
+>
+> Esta versión legacy se mantiene un release más por compatibilidad y será eliminada después.
+
+---
+
+## Documentación legacy
+
 `InstantLoop` corre un agente `InstantNeo` en un loop multi-turno con historial acumulado.
 No sabe de dominio: recibe configuración y produce resultado + traza.
 

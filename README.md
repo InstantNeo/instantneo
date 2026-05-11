@@ -88,6 +88,46 @@ neo = InstantNeo(
 print(neo.run("I need an exit."))
 ```
 
+## v2 — Event-sourced Orchestration (`InstantLoop`)
+
+InstantNeo v2 introduces an event-sourced stack on top of single-agent runs:
+
+- **`History`**: append-only immutable log of entries (Entry has id, author, type, content, refs).
+- **`Monitor`**: standalone rule engine that reacts to History changes (`add_rule(when, do)`).
+- **`InstantLoop`**: multi-turn orchestrator that composes agent + history + monitor + bridge.
+- **`RunLog`** (opt-in via `debug=True`): forensic per-run log persisted to disk separately from the lean History.
+
+```python
+from instantneo import InstantNeo, InstantLoop, tool
+
+@tool(description="Finalize when done",
+      parameters={"summary": {"description": "Resumen", "type": "str"}})
+def finalize(summary: str) -> dict:
+    return {"summary": summary, "done": True}
+
+agent = InstantNeo(
+    provider="openai", model="gpt-5-mini", api_key="sk-...",
+    role_setup="Be a helpful assistant. Call finalize when done.",
+    tools=[finalize],
+)
+loop = InstantLoop(agent=agent, name="my_loop",
+                    stop_tool="finalize", debug=True)
+result = loop.run("Explain photosynthesis briefly, then finalize.")
+print(result.terminated_reason)  # "stop_signal"
+print(result.stop_reason)         # "agent called finalize"
+print(result.log.turns)            # list of TurnLog (with messages_sent, usage, etc.)
+```
+
+Full design in `docs/design/`:
+
+- `loop-design.md` — InstantLoop
+- `history-design.md` — History layer
+- `monitor-design.md` — Monitor rule engine
+- `runinfo-to-entries.md` — bridge from `RunInfo` to `Entry`s
+- `log-design.md` — RunLog (Capa 1 generic + Capa 2 Loop-specific)
+
+> The legacy `instantneo.experimental.instant_loop` is **deprecated** in v2 and emits a `DeprecationWarning`. Use `from instantneo import InstantLoop` instead.
+
 ## API Reference
 
 - **InstantNeo Class**: Set provider, api_key, model, role_setup, plus tools and tuning params (temperature, max_tokens, etc.).
