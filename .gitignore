@@ -41,6 +41,14 @@ site/
 .env
 .env.local
 
+# Credenciales (no commitear nunca)
+# Service account JSONs de GCP / Vertex AI suelen estar en la raíz del repo
+# durante desarrollo local. Estos patrones los excluyen aunque no estén en .*.
+*service_account*.json
+*service-account*.json
+*-credentials.json
+r-y-r-agencia-de-aduanas-*.json
+
 # Build artifacts
 *.so
 *.dylib
