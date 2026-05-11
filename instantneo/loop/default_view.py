@@ -109,8 +109,6 @@ def _markdown_format_default(
         result:
         {...}
         </historial>
-
-        Razoná paso a paso ...
     """
     lines: list[str] = []
 
@@ -182,9 +180,6 @@ def _markdown_format_default(
         lines.append("")
 
     lines.append("</historial>")
-    lines.append("")
-    lines.append("Razoná paso a paso. Si tenés tools disponibles, "
-                 "podés usarlas. Si llegaste a una conclusión, expresála.")
     return "\n".join(lines)
 
 
