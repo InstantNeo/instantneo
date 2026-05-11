@@ -138,13 +138,40 @@ def test_response_with_tools_emits_response_plus_tool_calls() -> None:
     assert names == ["a", "b", "c"]
 
 
-def test_only_tools_no_response_content() -> None:
-    """response_content=None → solo emite tool_calls (no entry response)."""
+def test_only_tools_emits_response_with_null_text_plus_tool_calls() -> None:
+    """response_content=None pero hubo llamada al LLM con usage →
+    emite una entry response (con text=None pero con usage poblada)
+    además de las entries tool_call. Eso preserva la usage del step
+    aunque el agente no haya emitido texto."""
     h = History()
     ri = _mk_run_info(
         response_content=None,
         tool_executions=[_mk_tool_exec(name="solo")],
     )
+    entries = append_entry_from_run(
+        h, ri, turn_num=1, author="A", origin="o", run_id="r",
+    )
+    types = [e.type for e in entries]
+    assert types == ["response", "tool_call"]
+    response_entry = entries[0]
+    assert response_entry.content["text"] is None
+    assert response_entry.content["usage"] == ri.usage
+    assert entries[1].content["name"] == "solo"
+
+
+def test_only_tools_without_llm_usage_emits_only_tool_calls() -> None:
+    """response_content=None Y usage=None/llm_calls=[] → solo
+    tool_calls, sin response (no hay nada que registrar en la usage)."""
+    h = History()
+    ri = _mk_run_info(
+        response_content=None,
+        usage=None,
+        llm_calls=[],
+        tool_executions=[_mk_tool_exec(name="solo")],
+    )
+    # _mk_run_info pone usage default si recibe None — forzamos a None
+    # post-construcción para el caso degenerado.
+    ri.usage = None
     entries = append_entry_from_run(
         h, ri, turn_num=1, author="A", origin="o", run_id="r",
     )
@@ -404,7 +431,10 @@ if __name__ == "__main__":
         ("response_only_emits_single_response_entry", test_response_only_emits_single_response_entry),
         ("response_content_has_all_expected_keys",    test_response_content_has_all_expected_keys),
         ("response_with_tools_emits_response_plus_tool_calls", test_response_with_tools_emits_response_plus_tool_calls),
-        ("only_tools_no_response_content",            test_only_tools_no_response_content),
+        ("only_tools_emits_response_with_null_text_plus_tool_calls",
+            test_only_tools_emits_response_with_null_text_plus_tool_calls),
+        ("only_tools_without_llm_usage_emits_only_tool_calls",
+            test_only_tools_without_llm_usage_emits_only_tool_calls),
         ("run_error_emits_only_error_entry",          test_run_error_emits_only_error_entry),
         ("error_entry_content_shape",                 test_error_entry_content_shape),
         ("tool_exception_does_not_short_circuit",     test_tool_exception_does_not_short_circuit),

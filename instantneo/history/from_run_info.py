@@ -41,8 +41,10 @@ def append_entry_from_run(
 
     1. Si ``run_info.error`` está populado: **una sola** entry
        ``type='error'`` y retorna (no emite response ni tool_calls).
-    2. Si ``run_info.response_content is not None``: una entry
-       ``type='response'`` con el shape canónico.
+    2. Si hay ``response_content`` O si hubo llamada al LLM con
+       ``usage``: una entry ``type='response'`` con el shape canónico.
+       El campo ``text`` puede ser None cuando el step fue puro
+       tool_calls sin texto; la usage queda preservada igual.
     3. Por cada ``ToolExecution`` en ``run_info.tool_executions``: una
        entry ``type='tool_call'``.
 
@@ -85,8 +87,15 @@ def append_entry_from_run(
         ))
         return appended
 
-    # Caso 2: response (con reasoning si vino).
-    if run_info.response_content is not None:
+    # Caso 2: response.
+    # Se emite si hay `response_content` (texto del LLM) O si hubo una
+    # llamada al LLM con `usage` aunque ese step fuera puro tool_calls
+    # sin texto. Esto garantiza que la usage de TODO step quede en el
+    # History — útil para calcular costo total del run sin tener que
+    # activar `debug=True`.
+    has_text = run_info.response_content is not None
+    has_llm_usage = bool(run_info.usage) and bool(run_info.llm_calls)
+    if has_text or has_llm_usage:
         first_call = run_info.llm_calls[0] if run_info.llm_calls else None
         appended.append(history.append(
             author=author,
