@@ -525,6 +525,140 @@ def test_integrated_refs_query() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
+# Tests que DOCUMENTAN comportamientos límite / gotchas
+#
+# Estos no son "bugs"; son comportamientos del modelo actual que vale
+# la pena tener capturados para que cualquier cambio futuro a
+# defensive-copy o validación rompa explícitamente uno de estos tests
+# (forzando que la decisión sea consciente).
+# ════════════════════════════════════════════════════════════════════
+
+def test_content_mutation_visible_in_entry() -> None:
+    """Documenta: `frozen=True` no protege mutación del dict `content` adentro.
+
+    El dict que el caller pasa a `append` se guarda por referencia. Mutarlo
+    después (o mutar `entry.content` directamente) cambia lo que se ve en
+    el History. Esto es Python normal: `frozen=True` solo bloquea
+    reasignación de campos, no mutación de valores mutables.
+
+    Si en el futuro queremos endurecer esto (defensive shallow-copy en
+    `append`, o wrap en `MappingProxyType`), este test va a fallar y
+    obligará a tomar la decisión consciente.
+    """
+    h = History()
+    original = {"k": "valor_inicial"}
+    e = h.append(author="u", type="t", content=original)
+
+    # Caso A: mutar el dict ORIGINAL afecta la entry.
+    original["k"] = "mutado_desde_fuera"
+    assert e.content["k"] == "mutado_desde_fuera"
+    assert h.get(1).content["k"] == "mutado_desde_fuera"
+
+    # Caso B: mutar entry.content directamente también funciona.
+    e.content["k"] = "mutado_via_entry"
+    assert h.get(1).content["k"] == "mutado_via_entry"
+
+
+def test_from_dicts_with_duplicate_ids_silently_keeps_all() -> None:
+    """Documenta: `from_dicts` no valida unicidad de ids.
+
+    Si los dicts de entrada tienen ids repetidos, ambas entries se
+    agregan al History. `get(id)` devuelve la PRIMERA en orden de
+    aparición (por la búsqueda lineal). El doc no impone esto como
+    validación explícita; este test captura el comportamiento actual
+    para que cualquier cambio futuro a validación sea consciente.
+    """
+    h = History.from_dicts([
+        {"id": 1, "author": "u", "timestamp": 1.0, "type": "t", "content": {"i": 1}, "refs": []},
+        {"id": 1, "author": "u", "timestamp": 2.0, "type": "t", "content": {"i": 2}, "refs": []},
+    ])
+    # Ambas entries quedan en _entries.
+    assert len(h.all()) == 2
+    # get(1) devuelve la PRIMERA (scan lineal).
+    assert h.get(1).content == {"i": 1}
+    # _next_id se ajustó a max(ids)+1 = 2, así que el próximo append
+    # tendría id=2 (igual a la segunda existente, lo cual también es
+    # un escenario de corrupción potencial).
+    new = h.append(author="u", type="t", content={"i": 3})
+    assert new.id == 2
+
+
+def test_multiple_histories_are_isolated() -> None:
+    """Dos History independientes no comparten estado.
+
+    Importante porque la convención multi-history es real (un Loop
+    puede tener su History, un Pipeline futuro otro distinto, etc.).
+    """
+    h1 = History(name="a")
+    h2 = History(name="b")
+
+    h1.append(author="u", type="t", content={"in": "h1"})
+    h2.append(author="u", type="t", content={"in": "h2"})
+
+    assert len(h1.all()) == 1
+    assert len(h2.all()) == 1
+    assert h1.all()[0].content == {"in": "h1"}
+    assert h2.all()[0].content == {"in": "h2"}
+
+    # Ids independientes (no comparten counter)
+    assert h1.all()[0].id == 1
+    assert h2.all()[0].id == 1
+
+    # Views también independientes
+    h1.add_view("v", lambda h: "view_de_h1")
+    assert h1.has_view("v") is True
+    assert h2.has_view("v") is False
+
+
+def test_view_function_can_be_registered_on_multiple_histories() -> None:
+    """Una función view importable se puede registrar en varios histories.
+
+    Patrón del doc (líneas 167–169): mismas funciones reusables en
+    múltiples instancias. Confirma que el History no toma ownership
+    de la función ni la "ata" al primer history que la registra.
+    """
+    def render(history):
+        return [e.content for e in history.all()]
+
+    h1 = History()
+    h2 = History()
+    h1.add_view("render", render)
+    h2.add_view("render", render)
+
+    h1.append(author="u", type="t", content={"x": 1})
+    h2.append(author="u", type="t", content={"y": 2})
+
+    assert h1.export("render") == [{"x": 1}]
+    assert h2.export("render") == [{"y": 2}]
+
+
+def test_to_dict_does_not_mutate_original_content() -> None:
+    """Llamar `to_dict()` no modifica el `content` de la entry original.
+
+    Aun cuando `content` tiene tipos no-JSON-safe y `to_dict()` produce
+    una versión stringificada, el `content` original de la entry queda
+    intacto. Importante porque las vistas pueden llamar `to_dict()` en
+    bucle y no deberían tener efecto lateral.
+    """
+    from datetime import datetime
+    original_dt = datetime(2024, 1, 15, 12, 0, 0)
+    h = History()
+    e = h.append(author="u", type="t", content={"when": original_dt})
+
+    # Capturar el id() del datetime original
+    id_before = id(e.content["when"])
+    d = e.to_dict()  # serialización JSON-safe; debería ser una copia
+
+    # to_dict produjo una versión stringificada en el dict resultante
+    assert isinstance(d["content"]["when"], str)
+
+    # Pero el content original de la entry NO cambió
+    assert isinstance(e.content["when"], datetime)
+    assert id(e.content["when"]) == id_before
+    assert e.content["when"] == original_dt
+
+
+# ════════════════════════════════════════════════════════════════════
 # Runner standalone
 # ════════════════════════════════════════════════════════════════════
 
@@ -586,6 +720,12 @@ if __name__ == "__main__":
         # integrados
         ("integrated_view_filters_by_type",          test_integrated_view_filters_by_type),
         ("integrated_refs_query",                    test_integrated_refs_query),
+        # comportamientos límite documentados
+        ("content_mutation_visible_in_entry",        test_content_mutation_visible_in_entry),
+        ("from_dicts_with_duplicate_ids_silently_keeps_all", test_from_dicts_with_duplicate_ids_silently_keeps_all),
+        ("multiple_histories_are_isolated",          test_multiple_histories_are_isolated),
+        ("view_function_can_be_registered_on_multiple_histories", test_view_function_can_be_registered_on_multiple_histories),
+        ("to_dict_does_not_mutate_original_content", test_to_dict_does_not_mutate_original_content),
     ]
     failures = []
     for name, fn in tests:
