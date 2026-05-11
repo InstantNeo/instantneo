@@ -736,6 +736,47 @@ Args:
                 f"El proveedor actual no soporta el procesamiento de imágenes")
         return process_images(image_config.images, image_config.image_detail)
 
+    def get_resolved_role_setup(self, shelf_context: Optional[str] = None) -> str:
+        """System prompt final efectivo del agente.
+
+        Compone ``self.config.role_setup`` + ``self.tool_instructions``
+        (si las hay, generadas a partir de las tools registradas) +
+        ``shelf_context`` (si se pasa). Es exactamente el string que
+        el agente le manda al provider como mensaje ``system`` en cada
+        run.
+
+        Útil para:
+
+        - **Logging / debug**: ver el system prompt completo sin
+          ejecutar el run.
+        - **Orquestadores**: capturar la cabecera en un ``run_start``
+          entry (Loop, Pipeline futuro).
+        - **Replay**: reconstruir exactamente lo que el agente "es"
+          en un momento dado.
+
+        Args:
+            shelf_context: contexto adicional (persistente + efímero)
+                que se inyecta al final del system prompt. None por
+                default — no se inyecta nada.
+
+        Returns:
+            String final del system prompt. Si ``role_setup`` no está
+            seteado y no hay ``tool_instructions`` ni ``shelf_context``,
+            devuelve ``""``.
+        """
+        final = self.config.role_setup or ""
+        if hasattr(self, 'tool_instructions') and self.tool_instructions:
+            final = f"{final}{self.tool_instructions}"
+        if shelf_context:
+            final = f"""{final}
+
+###################################
+## ACTIVE KNOWLEDGE (from shelf) ##
+###################################
+
+{shelf_context}"""
+        return final
+
     def _prepare_messages(
         self,
         prompt: str,
@@ -750,21 +791,11 @@ Args:
             shelf_context: Optional context from shelf (persistent + ephemeral)
         """
         messages = []
-        final_role_setup = self.config.role_setup
-
-        # 1. Agregar tool instructions
-        if hasattr(self, 'tool_instructions') and self.tool_instructions:
-            final_role_setup = f"{self.config.role_setup}{self.tool_instructions}"
-
-        # 2. Agregar shelf context (persistente + efímero)
-        if shelf_context:
-            final_role_setup = f"""{final_role_setup}
-
-###################################
-## ACTIVE KNOWLEDGE (from shelf) ##
-###################################
-
-{shelf_context}"""
+        # La lógica de construcción del system prompt vive en el método
+        # público `get_resolved_role_setup` (PR 6). Mantenemos
+        # `final_role_setup` como variable local para no cambiar la
+        # legibilidad del resto del método.
+        final_role_setup = self.get_resolved_role_setup(shelf_context)
 
         if self.config.role_setup:
             messages.append(

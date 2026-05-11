@@ -325,6 +325,32 @@ class AgentCapabilities:
     # Backward compat alias
     get_all_skills_metadata = get_all_tools_metadata
 
+    def get_schemas(self) -> List[Dict[str, Any]]:
+        """OpenAI-format tool schemas para todas las tools registradas.
+
+        Devuelve una lista de schemas ``{"type": "function", "function":
+        {"name", "description", "parameters": ...}}`` lista para
+        serializar. Útil para:
+
+        - Capturar la cabecera del agente en logs / `run_start` entries
+          de un orquestador (Loop, Pipeline futuro).
+        - Replay: saber qué tools tenía disponibles un agente en un
+          momento dado.
+        - Introspección externa sin invocar al LLM.
+
+        Reusa ``instantneo.utils.tool_utils.format_tool`` internamente.
+        Tools sin ``parameters`` en su metadata se skippean (mismo
+        comportamiento que el call site inline en
+        ``core.py:_run`` cuando arma `formatted_tools`).
+        """
+        from instantneo.utils.tool_utils import format_tool
+        schemas: List[Dict[str, Any]] = []
+        for _key, metadata in self.get_all_tools_metadata().items():
+            if not metadata or 'parameters' not in metadata:
+                continue
+            schemas.append(format_tool(metadata))
+        return schemas
+
     def get_tool_metadata_by_name(self, name: str) -> Dict[str, Any]:
         matches = {key: func for key, func in self.registry.items() if func.__name__ == name}
         if not matches:
