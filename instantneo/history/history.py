@@ -135,6 +135,39 @@ class History:
         self._entries.append(entry)
         return entry
 
+    def append_from_run(
+        self,
+        run_info,
+        *,
+        turn_num: int,
+        author: str,
+        origin: str,
+        run_id: str,
+    ) -> "list[Entry]":
+        """Conveniencia: descompone un ``RunInfo`` en entries y las appendea.
+
+        Wrapper sobre ``instantneo.history.from_run_info.append_entry_from_run``.
+        Existe para DX: ``history.append_from_run(run_info, ...)`` es más
+        natural que importar la función desde otro módulo.
+
+        Ver el docstring de ``append_entry_from_run`` para semántica y
+        shape de las entries generadas.
+
+        Returns:
+            Lista de las entries appendeadas, en orden.
+        """
+        # Lazy import para evitar ciclo: from_run_info importa History
+        # solo bajo TYPE_CHECKING, pero por las dudas defendemos también
+        # del lado de history.py importando al momento de llamar.
+        from instantneo.history.from_run_info import append_entry_from_run
+        return append_entry_from_run(
+            self, run_info,
+            turn_num=turn_num,
+            author=author,
+            origin=origin,
+            run_id=run_id,
+        )
+
     def get(self, id: int) -> Entry:
         """Devuelve la entry con el id pedido. Levanta ``KeyError`` si no existe."""
         for entry in self._entries:

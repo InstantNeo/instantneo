@@ -30,12 +30,23 @@ def test_stop_signal_appends_entry_with_text() -> None:
     assert e.content["text"] == "manual_stop"
 
 
-def test_stop_signal_propagates_origin_when_available() -> None:
-    """Si hay entries previas con content['origin'], la nueva entry lo hereda."""
+def test_stop_signal_propagates_origin_from_run_start() -> None:
+    """Si hay un run_start con origin/run_id, la nueva entry los hereda.
+
+    NOTA (PR 5): cambió respecto del PR 3. Las queries current_origin/
+    current_run_id ahora leen SOLO de la entry run_start más reciente
+    (spec autoritativa: loop-design.md:1281-1287). Antes escaneaban
+    cualquier entry con esos campos.
+    """
     h = History()
     h.append(
-        author="bridge", type="response",
-        content={"origin": "loop_A", "run_id": "run-001", "text": "hola"},
+        author="orchestrator", type="run_start",
+        content={
+            "origin": "loop_A",
+            "run_id": "run-001",
+            "agent": {"provider": "openai"},
+            "loop":  {"max_steps": 10},
+        },
     )
 
     stop_signal("done")(h)
@@ -45,10 +56,18 @@ def test_stop_signal_propagates_origin_when_available() -> None:
     assert new_entry.content["run_id"] == "run-001"
 
 
-def test_stop_signal_when_no_prior_origin_returns_none() -> None:
-    """Sin entries con origin/run_id, los campos quedan en None."""
+def test_stop_signal_when_no_run_start_origin_run_id_are_none() -> None:
+    """Sin entry run_start, los campos origin/run_id quedan en None.
+
+    Caso típico: standalone Monitor sin Loop, o uso post-hoc del History
+    sin orquestador. Es degradación documentada — la entry queda igual
+    válida, solo sin metadata de auditoría del run.
+    """
     h = History()
+    # Entries de tipos varios pero ningún run_start
     h.append(author="u", type="random", content={"text": "no origin"})
+    h.append(author="bridge", type="response",
+             content={"text": "x", "origin": "ignored", "run_id": "ignored"})
 
     stop_signal("done")(h)
 
@@ -59,15 +78,16 @@ def test_stop_signal_when_no_prior_origin_returns_none() -> None:
     assert new_entry.content["run_id"] is None
 
 
-def test_stop_signal_uses_latest_origin_run_id() -> None:
-    """Si hay varias entries con origin/run_id, gana la más reciente."""
+def test_stop_signal_uses_latest_run_start_metadata() -> None:
+    """Multi-run: gana el run_start más reciente."""
     h = History()
     h.append(
-        author="bridge", type="response",
+        author="orchestrator", type="run_start",
         content={"origin": "loop_A", "run_id": "run-001"},
     )
+    h.append(author="orchestrator", type="run_end", content={})
     h.append(
-        author="bridge", type="response",
+        author="orchestrator", type="run_start",
         content={"origin": "loop_B", "run_id": "run-002"},
     )
 
@@ -145,9 +165,11 @@ def test_append_note_multiple_invocations_accumulate() -> None:
 if __name__ == "__main__":
     tests = [
         ("stop_signal_appends_entry_with_text",     test_stop_signal_appends_entry_with_text),
-        ("stop_signal_propagates_origin_when_available", test_stop_signal_propagates_origin_when_available),
-        ("stop_signal_when_no_prior_origin_returns_none", test_stop_signal_when_no_prior_origin_returns_none),
-        ("stop_signal_uses_latest_origin_run_id",   test_stop_signal_uses_latest_origin_run_id),
+        ("stop_signal_propagates_origin_from_run_start",   test_stop_signal_propagates_origin_from_run_start),
+        ("stop_signal_when_no_run_start_origin_run_id_are_none",
+         test_stop_signal_when_no_run_start_origin_run_id_are_none),
+        ("stop_signal_uses_latest_run_start_metadata",
+         test_stop_signal_uses_latest_run_start_metadata),
         ("stop_signal_factory_produces_callable",   test_stop_signal_factory_produces_callable),
         ("stop_signal_on_empty_history",            test_stop_signal_on_empty_history),
         ("append_note_appends_with_default_author", test_append_note_appends_with_default_author),

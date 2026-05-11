@@ -62,15 +62,22 @@ def test_monitor_observes_real_history_and_appends_via_action() -> None:
     assert signals[0].content["text"] == "se detectó un error"
 
 
-def test_stop_signal_action_propagates_origin_and_run_id_from_history() -> None:
-    """stop_signal hereda origin/run_id de la entry anterior que los tenía."""
+def test_stop_signal_action_propagates_origin_and_run_id_from_run_start() -> None:
+    """stop_signal hereda origin/run_id del run_start vigente.
+
+    NOTA (PR 5): cambió respecto del PR 3. Las queries derivan de run_start
+    (spec autoritativa), no de cualquier entry con esos campos.
+    """
     h = History()
-    # Simular bridge: una entry con origin/run_id
+    # Simular Loop: emite run_start con la metadata del run
     h.append(
-        author="bridge",
-        type="response",
-        content={"text": "hola", "origin": "loop_alpha", "run_id": "run-42"},
+        author="orchestrator",
+        type="run_start",
+        content={"origin": "loop_alpha", "run_id": "run-42",
+                 "agent": {}, "loop": {}},
     )
+    # El bridge ya appendea con esa metadata, pero acá vamos directo
+    # a una rule que dispara stop_signal y verifica que hereda.
 
     m = Monitor()
     m.add_rule(lambda h: True, stop_signal("done"))
@@ -209,13 +216,24 @@ def test_image_pipeline_with_monitor() -> None:
 
 
 def test_monitor_acts_on_history_with_image_entries_and_signals_stop() -> None:
-    """Variante: una rule basada en imágenes dispara stop_signal con origin."""
+    """Variante: rule basada en imágenes dispara stop_signal.
+
+    NOTA (PR 5): el origin/run_id de la stop_signal vienen de run_start,
+    no de la entry de imagen (spec autoritativa).
+    """
     path = _write_tiny_png()
     try:
         images = process_images(path, "low")
 
         h = History()
-        # Simular el bridge: entry con origin/run_id
+        # Loop simulado: run_start con metadata canónica
+        h.append(
+            author="orchestrator",
+            type="run_start",
+            content={"origin": "loop_image", "run_id": "run-img-1",
+                     "agent": {}, "loop": {}},
+        )
+        # Bridge simulado: entry de prompt con imágenes
         h.append(
             author="bridge",
             type="prompt",
@@ -239,7 +257,7 @@ def test_monitor_acts_on_history_with_image_entries_and_signals_stop() -> None:
         assert len(signals) == 1
         sig = signals[0]
         assert sig.content["text"] == "imagen procesada, parar"
-        # Heredó origin y run_id desde la entry de la imagen
+        # Heredó origin y run_id del run_start
         assert sig.content["origin"] == "loop_image"
         assert sig.content["run_id"] == "run-img-1"
     finally:
@@ -254,8 +272,8 @@ if __name__ == "__main__":
     tests = [
         ("monitor_observes_real_history_and_appends_via_action",
          test_monitor_observes_real_history_and_appends_via_action),
-        ("stop_signal_action_propagates_origin_and_run_id_from_history",
-         test_stop_signal_action_propagates_origin_and_run_id_from_history),
+        ("stop_signal_action_propagates_origin_and_run_id_from_run_start",
+         test_stop_signal_action_propagates_origin_and_run_id_from_run_start),
         ("multiple_monitors_on_same_history_compose_via_union",
          test_multiple_monitors_on_same_history_compose_via_union),
         ("view_on_history_used_by_when_tokens_above",
