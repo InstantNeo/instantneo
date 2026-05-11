@@ -1,6 +1,8 @@
 # History — diseño y API
 
-Documento de la primera capa de la arquitectura event-sourced para InstantLoop: **el History**, sus **Entries**, sus **Vistas** y la integración con **Monitor**. No incluye el Loop, el bridge ni los helpers — esas piezas se documentan por separado a medida que se cierran. La API del Monitor en sí vive en `monitor-design.md`.
+Documento de la primera capa de la arquitectura event-sourced para InstantLoop: **el History**, sus **Entries** y sus **Vistas**. No incluye el Loop, el Monitor, el bridge ni los helpers — esas piezas se documentan por separado. El Monitor (rule engine que opera contra un History) vive en `monitor-design.md`; el Loop lo invoca cuando corresponde.
+
+**Scope del History**: es el **log operacional** — captura lo que el agente necesita para continuar (responses, tool calls, errors), lo que la vista renderea, y baseline de observabilidad casual (usage, timing, model). **No es** el log de debug completo: ese vive aparte en `RunLog` (ver `log-design.md`), opt-in vía `debug=True` en el Loop. La data pesada (prompt rendered, messages_sent literal, detalle multi-call) nunca llega al History.
 
 ---
 
@@ -13,7 +15,7 @@ Las **vistas** son funciones puras registradas en una instancia de History que p
 **Reglas que sostienen el diseño:**
 
 - Nadie muta entries existentes. Las "modificaciones" son nuevas entries con `refs` apuntando a las afectadas.
-- El History es **pasivo**: no emite eventos, no notifica, no tiene observers. Solo guarda y devuelve.
+- El History es **estrictamente pasivo**: no emite eventos, no notifica, no tiene observers, no tiene Monitor adentro. Solo guarda y devuelve.
 - Las vistas son **puras**: misma history → mismo output. Sin estado, sin side effects, sin I/O. Se ejecutan fresh cada vez.
 - El History **no valida** ni el `type` ni el shape de `content`. Strings y dicts libres. Las convenciones sobre qué types existen viven en la documentación de los consumidores que las definen (Loop, utils, código de usuario), no acá.
 
@@ -58,19 +60,20 @@ Eso separa dos cosas claramente:
 
 ## History — el container
 
-Pasivo. Storage de entries + registry de vistas + un Monitor asociado. Sin estado fuera de lo que appendea el caller.
+Pasivo. Storage de entries + registry de vistas. Sin estado fuera de lo que appendea el caller.
 
 ```python
 class History:
-    def __init__(self,
-                 name: str | None = None,
-                 monitors: "Monitor | list[Monitor] | None" = None):
+    def __init__(self, name: str | None = None):
         ...
 
     # ── Storage de entries ─────────────────────────
     def append(self, *, author: str, type: str,
                content: dict, refs: tuple[int, ...] = (),
                timestamp: float | None = None) -> Entry: ...
+    def append_from_run(self, run_info, *,
+                        turn_num: int, author: str,
+                        origin: str, run_id: str) -> list[Entry]: ...
     def get(self, id: int) -> Entry: ...
     def all(self) -> list[Entry]: ...
     def by_author(self, author: str) -> list[Entry]: ...
@@ -83,14 +86,12 @@ class History:
     def list_views(self) -> list[str]: ...
     def has_view(self, name: str) -> bool: ...
 
-    # ── Monitor (proxies sobre self.monitor) ───────
-    monitor: "Monitor"                                # siempre existe
-    def register_rule(self, when, do) -> None: ...    # proxy a self.monitor.register_rule
-    def evaluate_monitor(self) -> None: ...           # equivale a self.monitor.evaluate(self)
-
     # ── Serialización ──────────────────────────────
     def to_json(self) -> str: ...
     def to_dicts(self) -> list[dict]: ...
+
+    # ── Reset (deliberado) ─────────────────────────
+    def reset(self) -> None: ...
 ```
 
 ### Constructor
@@ -99,22 +100,21 @@ class History:
 history = History()
 # o con un nombre opcional para debug / multi-history
 history = History(name="main")
-# o pasándole monitors al construir (ver más abajo)
-history = History(monitors=my_monitor)
-history = History(monitors=[mon_a, mon_b])
 ```
 
 **Sin vistas pre-registradas** — `list_views()` retorna lista vacía hasta que el caller registre alguna.
 
-Sobre `monitors`: ver la sección dedicada más abajo.
+**Sin Monitor adentro** — el Monitor es una pieza separada que opera contra cualquier History. Se pasa al consumidor (típicamente un Loop) o se invoca manualmente con `monitor(history)`. Ver `monitor-design.md`.
 
 ### Storage
 
 - `append(...)`: asigna `id` auto-incremental y `timestamp = time.time()` salvo override. Retorna la `Entry` creada.
+- `append_from_run(...)`: conveniencia. Descompone un `RunInfo` (de InstantNeo) en entries y las appendea de una. Wrapper sobre la función `append_entry_from_run` documentada en `runinfo-to-entries.md`. Se invoca `history.append_from_run(run_info, turn_num=..., author=..., origin=..., run_id=...)`.
 - `get(id)`: levanta `KeyError` si no existe.
 - `all()`: lista en orden de `id` ascendente.
 - `by_author`, `by_type`: filtros simples sobre `all()`.
-- Sin `update`, sin `delete`. Inmutabilidad estricta.
+- Sin `update`, sin `delete` por entry. Inmutabilidad estricta de cualquier entry individual.
+- `reset()`: única operación destructiva (ver sección dedicada más abajo). Borra TODO. No es delete granular.
 - Subclases para persistencia (`FileHistory`, `RedisHistory`, etc.) implementan la misma interface.
 
 ### Registry de vistas
@@ -205,72 +205,11 @@ Para queries de código (debug, custom logic, lecturas internas), no hace falta 
 history.all()
 history.get(42)
 history.by_author("M")
-history.by_type("summary")
+history.by_type("note")
 [e for e in history.all() if 17 in e.refs]
 ```
 
 Si querés salir del proceso Python (jq, dashboards, etc.), `history.to_json()` o `history.to_dicts()`.
-
----
-
-## Monitor — observación reactiva
-
-Cada History viene con un **Monitor** asociado en el atributo `history.monitor`. El Monitor tiene reglas `(when, do)` que el orquestador (típicamente un Loop) evalúa entre steps; las reglas que matchean disparan acciones que normalmente appendean nuevas entries.
-
-La API del Monitor en sí está documentada en `monitor-design.md`. Acá se documenta solo la integración con History.
-
-### Cómo se inserta un Monitor
-
-Al construir el History, vía el parámetro `monitors`. Tres casos, mismo pattern que `InstantNeo(tools=...)`:
-
-```python
-# Caso 1: una instance de Monitor → asignación directa
-history = History(monitors=my_monitor)
-# history.monitor IS my_monitor (mismo objeto, mutaciones se propagan)
-
-# Caso 2: lista de monitors → se unen vía MonitorOperations.union
-history = History(monitors=[monitor_a, monitor_b])
-# history.monitor es un Monitor nuevo (snapshot estático de las reglas)
-
-# Caso 3: nada → Monitor() vacío por default
-history = History()
-# history.monitor existe igualmente, pero sin reglas
-```
-
-`history.monitor` **siempre existe**, garantizado.
-
-### Proxies en History
-
-Para ergonomía del caso simple, History expone dos métodos que delegan al Monitor:
-
-```python
-history.register_rule(when, do)
-# equivale a:
-history.monitor.register_rule(when, do)
-
-history.evaluate_monitor()
-# equivale a:
-history.monitor.evaluate(history)
-```
-
-Es legal usar cualquiera de las dos formas; son la misma operación.
-
-### Compartir Monitors entre Histories
-
-Como una `Monitor` instance puede attacharse a múltiples Histories vía el caso 1, podés definir un Monitor una vez y reusarlo:
-
-```python
-shared = Monitor()
-shared.register_rule(when_type_present("error"), stop_with("err"))
-
-h1 = History(monitors=shared)
-h2 = History(monitors=shared)
-# Ambas comparten el mismo Monitor. Mutarlo afecta a las dos.
-```
-
-### Cuándo se invoca evaluate_monitor()
-
-Un Loop (cuando se documente) llamará `history.evaluate_monitor()` al final de cada step, después de que el agente y el bridge appendeen sus entries. Pero el `evaluate_monitor()` es público y agnóstico — cualquier orquestador o test puede invocarlo cuando necesite.
 
 ---
 
@@ -339,6 +278,130 @@ history.append(
 
 ---
 
+## Tamaño y persistencia
+
+### Cuánto pesa un History en RAM
+
+Cada Entry es liviana; el peso real lo dan los `content`:
+
+| Tipo de entry típica | Tamaño aprox |
+|---|---|
+| `step_start`, `step_end`, `run_end` (solo metadata) | 200-500 bytes |
+| `tool_call` con args y result chicos | 1-5 KB |
+| `tool_call` con result grande (e.g., scrape) | 10-100 KB |
+| `response` con reasoning largo (extended thinking) | 5-50 KB |
+| `prompt` con imágenes (refs livianos) | 1-10 KB |
+(notar: la data pesada de debug, como `messages_sent` literal, **no** llega al History; vive aparte en el `RunLog` si se construyó con `debug=True`)
+
+Reglas de pulgar:
+
+| Escenario | Entries | RAM |
+|---|---|---|
+| Run típico (5-10 turnos) | ~30-100 | ~30-500 KB |
+| Sesión multi-run (50 runs) | ~1500 | ~50-500 MB |
+| Watcher de fondo corriendo días | 100k+ | GB-scale |
+
+Hasta unos miles de entries, el History es trivial. Pasada esa marca, conviene pensar en compactación o en snapshot+reset.
+
+### Las vistas pueden filtrar, pero la RAM no baja
+
+Una vista puede mostrar al consumidor solo un subset de las entries (filtrar por type, por author, por run_id, lo que sea). Pero **las entries no se borran del History** — siguen en RAM, append-only, para auditoría y replay.
+
+Es decir: la "compresión" del contexto que recibe el agente es **lógica** (decisión de la vista), no **física** (memoria). Si querés bajar la memoria también, persistís y reseteás (siguiente sección).
+
+### `reset()` — operación deliberada y única
+
+`history.reset()` es la única operación destructiva. Borra TODO el log y reinicia el contador de id:
+
+```python
+class History:
+    def reset(self) -> None:
+        """Borra todas las entries y reinicia el contador de id.
+
+        Operación irreversible. Las refs de cualquier entry futura no podrán
+        apuntar a las antiguas. Patrón seguro: persistir ANTES.
+        """
+```
+
+**Patrón canónico de uso (snapshot + reset):**
+
+```python
+import json
+from pathlib import Path
+
+# 1. Persistir lo que hay
+Path("session_001.json").write_text(history.to_json())
+
+# 2. Reset: el History pasa a estar vacío
+history.reset()
+
+# 3. (Opcional) Marca de continuidad simbólica
+history.append(
+    author="orchestrator",
+    type="session_continued",
+    content={"prior_session_path": "session_001.json"},
+)
+
+# 4. Seguir trabajando
+loop = InstantLoop(agent=A, history=history, ...)
+loop.run("...")
+```
+
+**Reglas de doctrina:**
+
+1. **`reset()` es nombre con peso semántico** — sugiere "vuelvo a estado inicial deliberadamente". No usamos `clear()` (suena rutinario por su uso en `dict`/`list`).
+2. **No hay `delete(id)` ni `truncate(...)`** — eliminarían entries puntuales rompiendo cualquier `refs` que apunte a ellas. Si querés perder data, perdés todo de una vez con `reset()` y queda evidente.
+3. **El patrón documentado siempre persiste antes** — quien escriba `reset()` sin snapshot lo hace porque así lo decidió.
+4. **La doctrina canónica es append-only** — `reset()` es la excepción consciente para casos de "empezar de cero", no para gestión de memoria fina (eso va vía compactación + futuras subclases con backend).
+
+### Persistencia incremental (patrón sin reset)
+
+Lo más común no es resetear, sino persistir incrementalmente para tener un punto de recuperación si el proceso muere. Se hace con una rule del Monitor:
+
+```python
+def persist_to_disk(path: Path):
+    def action(history):
+        path.write_text(history.to_json())
+    return action
+
+monitor.add_rule(every_n_appends(50), persist_to_disk(Path("session.json")))
+```
+
+Para recuperar:
+
+```python
+history = History.from_dicts(json.load(open("session.json")))
+```
+
+(`from_dicts` es el complementario de `to_dicts()`, trivial de implementar.)
+
+### Cuándo "termina" un History
+
+Nunca por sí solo. El History es un objeto Python; existe hasta que el GC se lo lleve. **No tiene noción de "complete" o "closed"**.
+
+Lo que sí tiene son momentos donde está **estable** — ningún orquestador está escribiendo:
+
+| Caso | Momento estable |
+|---|---|
+| Un solo `loop.run()` | Cuando retorna |
+| Varios `.run()` secuenciales | Después de cada uno |
+| Watcher en background activo | Solo cuando el watcher se detuvo |
+| Mixto | Cuando todos los threads finalizaron |
+
+El History **no avisa**. Vos sabés cuándo está estable y persistís. Si querés una marca explícita en el log:
+
+```python
+history.append(
+    author="orchestrator",
+    type="session_end",
+    content={"reason": "user_done", "completed_at": "..."},
+)
+```
+
+Esa es **convención del usuario**, no del framework.
+
+---
+
 ## Verificación (cuando se implemente)
 
 Tests por método, todos puros sobre instancias de `History`:
@@ -358,13 +421,14 @@ Tests por método, todos puros sobre instancias de `History`:
 - `test_to_json_roundtrip`
 - `test_to_dicts_roundtrip`
 - `test_entries_are_immutable`
+- `test_append_from_run_delegates_to_function` — el método de conveniencia produce el mismo resultado que `append_entry_from_run(history, ...)`.
+- `test_reset_empties_entries_and_resets_id` — después de `reset()`, `all()` está vacío y la próxima entry tiene id=1.
+- `test_reset_does_not_clear_views` — las vistas registradas sobreviven al reset (son metadata, no contenido).
 
 ---
 
 ## Pendiente (a documentar en próximas vueltas)
 
-- **Bridge** `run_info_to_entries`: cuáles son los types que produce desde `RunInfo` (probablemente `response`, `tool_call`, posiblemente `error`). Pertenece a la sección del Loop.
-- **Trigger** y su API: Conditions, Actions, evaluación entre steps.
-- **InstantLoop** refactor: cómo orquesta History + vistas + triggers, qué types operacionales emite (probablemente `step_start`, `step_end`, etc.), si pre-registra una vista `loop_default`.
-- **Helpers** (`apply_summaries`, `apply_redactions`, formats, etc.): biblioteca opt-in. Allí se documentan los types convencionales que esos helpers consumen.
+- **Helpers de formato y queries**: biblioteca opt-in que documente patrones útiles para vistas (markdown render, agrupación por turno, etc.).
 - **Estrategia de migración** desde el `instant_loop.py` actual.
+- **Concurrencia**: hoy `History.append` no tiene locking. Si se escribe desde múltiples threads (por ejemplo, una action en background), agregar un `threading.Lock` en `append`. Queda como ítem futuro.

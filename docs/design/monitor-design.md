@@ -1,6 +1,8 @@
 # Monitor — diseño y API
 
-Documento de la capa que **observa** un History y **reacciona** cuando se cumplen condiciones registradas. Vive como objeto standalone, attachable a uno o varios Histories.
+Documento del **Monitor**: rule engine standalone que opera contra un `History`. Es genérico — sirve para terminación de loops, alerting, persistencia, observabilidad, auditoría, coordinación multiagente. Su uso más común es como pieza interna de un `InstantLoop`, pero el Monitor en sí no sabe nada del Loop.
+
+**El Monitor no es parte del sistema de Debug Log** (`RunLog`, ver `log-design.md`). Son piezas ortogonales: el Monitor reacciona a entries del History con rules; el RunLog captura todo lo que pasó en formato forense. Una rule de Monitor PUEDE escribir al History (in-band) o hacer side effects (out-of-band, ej. persistir a archivo) — pero el RunLog se ocupa de una capa distinta de captura, no como reacción a rules sino como registro paralelo del Loop.
 
 ---
 
@@ -9,16 +11,17 @@ Documento de la capa que **observa** un History y **reacciona** cuando se cumple
 Un `Monitor` es un objeto que tiene **reglas**: pares `(when, do)` donde:
 
 - `when` es una **condición** — función pura `Callable[[History], bool]`.
-- `do` es una **acción** — función `Callable[[History], None]`, típicamente appendea entries.
+- `do` es una **acción** — función `Callable[[History], None]`, puede tener cualquier efecto.
 
-El Monitor NO se evalúa solo. Alguien (típicamente un Loop) llama `monitor.evaluate(history)` en momentos definidos. En esa llamada, el Monitor itera sus reglas en orden y dispara las que matchean.
+El Monitor NO se evalúa solo. Alguien lo invoca con `monitor(history)` cuando le toca. En esa invocación, itera sus reglas en orden y dispara las que matchean.
 
 **Reglas que sostienen el diseño:**
 
-- El Monitor es **standalone**: existe sin necesidad de un History específico. Se le pasa el history al evaluar.
-- **Reusable**: la misma instancia puede attacharse a múltiples Histories (compartiendo reglas).
-- Por default, todo es **síncrono**: las acciones bloquean la `evaluate()` hasta completarse.
-- No hay registry global, no hay events del History al Monitor. El Monitor consulta el History cuando lo llaman.
+- **Standalone**: el Monitor no guarda referencia a ningún History. El history llega como argumento cada vez que se invoca.
+- **Pasivo**: no tiene reloj interno, no tiene thread propio, no observa nada autónomamente. Solo hace algo cuando alguien lo llama.
+- **Reusable**: la misma instancia puede invocarse contra múltiples Histories distintos.
+- **Síncrono por default**: las acciones bloquean la invocación hasta completarse. Si una action quiere correr en background, tiene que armar su propio thread.
+- **Genérico**: el Monitor no sabe del Loop ni de InstantNeo. Su única dependencia es la interface `History`.
 
 ---
 
@@ -30,51 +33,26 @@ class Monitor:
         self.name = name
         self._rules: list[tuple[Condition, Action]] = []
 
-    def register_rule(self, when: Condition, do: Action) -> None:
+    def add_rule(self, when: Condition, do: Action) -> None:
         """Añade una regla (when, do) al final de la lista."""
 
-    def evaluate(self, history: "History") -> None:
+    def __call__(self, history: "History") -> None:
         """Itera reglas y dispara las que matchean contra el history pasado."""
 ```
 
-Dos métodos públicos. `name` es opcional (debug, identificación).
+Tres métodos públicos (contando `__init__`). `name` es opcional (debug, identificación).
 
----
-
-## Cómo se crea y se inserta en un History
-
-Construcción explícita:
+**Uso canónico**:
 
 ```python
-from instantneo.monitor import Monitor
-
 monitor = Monitor()
-monitor.register_rule(when_tokens_above("agent_default", 100_000), summarize_with(M))
-monitor.register_rule(when_type_present("error"),                  stop_with("err"))
+monitor.add_rule(when_type_present("error"), stop_signal("err"))
+monitor.add_rule(every_n_steps(10),          append_note("checkpoint"))
+
+monitor(history)        # una pasada — evalúa todas las rules contra el history actual
 ```
 
-Inserción en un History (mismo pattern que `InstantNeo(tools=...)`):
-
-```python
-# Caso 1: una instancia
-history = History(monitors=monitor)
-# history.monitor IS monitor (mismo objeto; mutaciones se propagan)
-
-# Caso 2: lista de monitors (se unen)
-history = History(monitors=[monitor_a, monitor_b])
-# history.monitor es un nuevo Monitor con las reglas de ambos (snapshot)
-
-# Caso 3: nada
-history = History()
-# history.monitor es Monitor() vacío (default)
-```
-
-`history.monitor` **siempre existe**. Para ergonomía, History expone proxies:
-
-```python
-history.register_rule(when, do)        # equivale a history.monitor.register_rule(when, do)
-history.evaluate_monitor()             # equivale a history.monitor.evaluate(history)
-```
+Llamar al monitor como función es lo idiomático. Coherente con el resto del modelo (conditions, actions, views también son callables que reciben `history`).
 
 ---
 
@@ -89,7 +67,7 @@ class MonitorOperations:
         """Combina N monitors en uno nuevo, preservando orden de reglas."""
 ```
 
-`History` lo usa internamente cuando le pasás una lista al constructor. También importable para usos manuales.
+Lo usan los consumidores que aceptan `monitors=` en su constructor (ej. `InstantLoop`) para fusionar listas en un único Monitor. También importable para usos manuales.
 
 ---
 
@@ -106,19 +84,68 @@ Ambas reciben el `History` completo. Adentro pueden:
 
 - Consultar entries: `history.all()`, `history.by_type(...)`, `history.by_author(...)`, `history.get(id)`.
 - Ejecutar vistas registradas: `history.export("...")`.
-- Appendear nuevas entries: `history.append(...)` — esto es lo que casi siempre hace una action.
+- Appendear nuevas entries: `history.append(...)` (in-band).
+- Hacer cualquier otro efecto Python: HTTP, archivos, alertas, métricas, lo que sea (out-of-band).
 - Serializar: `history.to_json()`, `history.to_dicts()`.
 
 ### Pureza
 
 - **Conditions** deben ser puras. Misma history → mismo bool. Sin side effects, sin I/O.
-- **Actions** son intencionalmente impuras. Producen efectos: appendear entries, llamar a un LLM, escribir a disco, hacer HTTP.
+- **Actions** son intencionalmente impuras. Pueden tener **cualquier efecto** que un Python normal pueda tener.
+
+### Dos clases de efecto que puede tener una action
+
+**In-band — el orquestador (típicamente un Loop) lo ve.**
+
+Son las que appendean entries al History. Quienes consuman el History después (Loop, vistas, otras rules en la misma pasada) reaccionan al cambio.
+
+| Action | Qué appendea | Quién la consume |
+|---|---|---|
+| `stop_signal("foo")` | `stop_signal` | un Loop la lee y rompe |
+| `append_note(text)` | `note` | la vista la incluye si quiere |
+| custom (cualquiera) | el type que el autor decida | quien interprete ese type |
+
+**Out-of-band — el orquestador no se entera.**
+
+Son las que producen cambios externos al proceso. No tocan el History.
+
+```python
+def notify_slack_on_error(webhook_url):
+    def action(history):
+        last_err = history.by_type("error")[-1]
+        requests.post(webhook_url, json={"text": f"Error: {last_err.content['exception']}"})
+    return action
+
+def persist_history_every_step(path):
+    def action(history):
+        path.write_text(history.to_json())
+    return action
+```
+
+El orquestador sigue como si nada hubiera pasado.
+
+**Mezcla — efecto externo + audit trail.**
+
+```python
+def notify_and_record(webhook_url):
+    def action(history):
+        last_err = history.by_type("error")[-1]
+        resp = requests.post(webhook_url, json={"text": f"...{last_err.content}..."})
+        history.append(
+            author="orchestrator",
+            type="notification_sent",
+            content={"channel": "slack", "status_code": resp.status_code},
+        )
+    return action
+```
+
+Útil cuando querés trazabilidad: "¿en qué step se notificó? ¿salió bien?"
 
 ### Sincronía
 
-`evaluate()` corre las reglas **secuencialmente** en el orden registrado. Cada action **bloquea** hasta terminar. Las acciones posteriores ven el estado dejado por las anteriores en el mismo `evaluate()`.
+`monitor(history)` corre las reglas **secuencialmente** en el orden registrado. Cada action **bloquea** hasta terminar. Las acciones posteriores ven el estado dejado por las anteriores en la misma pasada.
 
-Si necesitás no bloquear, tu action puede disparar un thread/task y retornar — pero las entries que produzca llegarán fuera de orden respecto al step.
+Si necesitás no bloquear, tu action puede disparar un thread/task y retornar — pero las entries que produzca llegarán fuera de orden respecto al step. Nota: si vas a appendear desde un thread paralelo, el `History` necesita locking en `append` (hoy no lo tiene; ver `history-design.md`).
 
 ---
 
@@ -176,13 +203,44 @@ Estas asumen que el Loop appendea entries `type="step_start"` con `content["step
 
 ---
 
-## Actions built-in
+## Actions built-in (in-band)
+
+Set mínimo, dos:
 
 | Función | Qué hace |
 |---|---|
-| `stop_with(reason)` | Appendea `Entry(type="stop_signal", content={"reason": reason})`. El Loop la lee y rompe |
-| `summarize_with(agent_M, view_name="agent_default")` | Ejecuta `agent_M` sobre `history.export(view_name)`, appendea `Entry(type="summary", refs=..., content={"text": ...})` cubriendo entries de `response`/`tool_call` no cubiertas previamente |
+| `stop_signal(text)` | Appendea `Entry(type="stop_signal", content={"text": text, "origin": current_origin(history), "run_id": current_run_id(history)})`. Un Loop la lee — si el `text` está en la whitelist `stop_signals` del Loop, rompe |
 | `append_note(text, author="orchestrator")` | Appendea `Entry(type="note", content={"text": text})` |
+
+### Implementación canónica de `stop_signal`
+
+```python
+from instantneo.history.queries import current_run_id, current_origin
+
+def stop_signal(text: str):
+    """Action factory: appendea un stop_signal con el texto dado.
+
+    El Loop, si lo escucha (vía su parámetro `stop_signals=[..., text, ...]`),
+    rompe el run con stop_reason=text.
+    """
+    def action(history):
+        history.append(
+            author="orchestrator",
+            type="stop_signal",
+            content={
+                "text":   text,
+                "origin": current_origin(history),
+                "run_id": current_run_id(history),
+            },
+        )
+    return action
+```
+
+El Loop **solo lee `content["text"]`** y compara con su whitelist. Los otros campos (`origin`, `run_id`) son para auditoría posterior, no para el matching.
+
+Cualquier otra action — invocar a otro agente para que produzca algún tipo de entry, persistir a disco, notificar Slack, etc. — es **función custom del usuario**. La librería no asume convenciones más allá de `stop_signal` (contrato del Loop) y `note` (utilidad genérica).
+
+Las **out-of-band** (notificaciones, persistencia, métricas, HTTP) son siempre custom — no hay built-ins porque dependen del stack del usuario. Ejemplos viven en docs/recipes, no en el core.
 
 ---
 
@@ -205,7 +263,7 @@ def when_more_than(n: int):
         return len(history.all()) > n
     return cond
 
-monitor.register_rule(when_more_than(50), my_action)
+monitor.add_rule(when_more_than(50), my_action)
 ```
 
 ### Condition multipropósito (regex sobre content serializado)
@@ -229,9 +287,9 @@ def when_any_content_matches(pattern: str, in_types=None):
         return False
     return cond
 
-monitor.register_rule(
+monitor.add_rule(
     when_any_content_matches(r"\bFINAL\b", in_types={"response"}),
-    stop_with("agente declaró cierre"),
+    stop_signal("agente declaró cierre"),
 )
 ```
 
@@ -264,7 +322,7 @@ def log_to_file(path):
         path.write_text(history.to_json())
     return action
 
-monitor.register_rule(when_more_than(100), log_to_file(Path("/tmp/dump.json")))
+monitor.add_rule(when_more_than(100), log_to_file(Path("/tmp/dump.json")))
 ```
 
 ### Action que llama a un agente externo
@@ -278,7 +336,7 @@ def critic_review(critic_agent):
                        content={"text": critique})
     return action
 
-monitor.register_rule(every_n_steps(10), critic_review(critic_agent))
+monitor.add_rule(every_n_steps(10), critic_review(critic_agent))
 ```
 
 ---
@@ -292,15 +350,14 @@ Para reusar un monitor entre runs o módulos, definilo en código como **factory
 ```python
 # my_monitors.py
 from instantneo.monitor import Monitor
-from instantneo.actions import summarize_with, stop_with
-from instantneo.conditions import when_tokens_above, when_type_present
+from instantneo.actions import stop_signal, append_note
+from instantneo.conditions import when_type_present, every_n_steps
 
-def build_standard_monitor(summarizer_agent):
+def build_standard_monitor():
     """Factory que arma el monitor estándar para mis runs."""
     m = Monitor(name="standard")
-    m.register_rule(when_tokens_above("agent_default", 100_000),
-                    summarize_with(summarizer_agent))
-    m.register_rule(when_type_present("error"), stop_with("err"))
+    m.add_rule(when_type_present("error"), stop_signal("err"))
+    m.add_rule(every_n_steps(10),          append_note("checkpoint"))
     return m
 ```
 
@@ -308,71 +365,136 @@ def build_standard_monitor(summarizer_agent):
 # main.py
 from my_monitors import build_standard_monitor
 
-monitor = build_standard_monitor(my_M)
-history = History(monitors=monitor)
+monitor = build_standard_monitor()
+loop = InstantLoop(agent=A, history=history, monitors=monitor)
 ```
+
+---
+
+## Cómo lo usa un Loop
+
+El `InstantLoop` (ver `loop-design.md`) acepta `monitors=` en su constructor con el mismo patrón que `InstantNeo(tools=...)`:
+
+```python
+# Caso 1: una instance
+loop = InstantLoop(agent=A, history=H, monitors=my_monitor)
+
+# Caso 2: lista (se unen vía MonitorOperations.union internamente)
+loop = InstantLoop(agent=A, history=H, monitors=[mon_a, mon_b])
+
+# Caso 3: nada
+loop = InstantLoop(agent=A, history=H)
+# loop.monitor es Monitor() vacío
+```
+
+El Loop **invoca su monitor una vez por step**, al final, después de que el agente y el bridge appendearon sus entries. Esa cadencia es la del Loop — el Monitor mismo no tiene reloj.
+
+---
+
+## Uso sin Loop
+
+El Monitor es independiente del Loop. Sirve igual contra cualquier History:
+
+```python
+# Análisis post-hoc — un history terminado, miro qué pasó
+history = History.from_dicts(json.load(open("run.json")))
+m = Monitor()
+m.add_rule(when_type_present("error"), append_note("encontré errores"))
+m(history)              # una pasada
+```
+
+```python
+# Monitoreo manual — voy appendeando y evaluando entre medio
+history = History()
+m = Monitor()
+m.add_rule(every_n_appends(10), my_action)
+
+for thing in stream:
+    history.append(author="...", type="...", content={...})
+    m(history)          # vos decidís cuándo
+```
+
+```python
+# Polling en background (patrón opt-in)
+import threading, time
+
+stop = threading.Event()
+
+def watcher():
+    while not stop.is_set():
+        m(history)
+        time.sleep(1.0)
+
+threading.Thread(target=watcher, daemon=True).start()
+# ... cuando termines:
+stop.set()
+```
+
+El último patrón solo conviene para actions out-of-band (notify, persist) y asume que vas a manejar locking en `history.append` si el History se modifica concurrentemente.
 
 ---
 
 ## Ejemplos completos
 
-### Compactar contexto cuando crece
-
-```python
-from instantneo.history import History
-from instantneo.monitor import Monitor
-from instantneo.conditions import when_tokens_above
-from instantneo.actions import summarize_with
-
-monitor = Monitor()
-monitor.register_rule(when_tokens_above("agent_default", 100_000), summarize_with(M))
-
-history = History(monitors=monitor)
-```
-
 ### Parar si aparece un error
 
 ```python
 from instantneo.conditions import when_type_present
-from instantneo.actions import stop_with
+from instantneo.actions import stop_signal
 
-monitor.register_rule(when_type_present("error"), stop_with("se detectó un error"))
+monitor.add_rule(when_type_present("error"), stop_signal("se detectó un error"))
 ```
 
-### Resumen periódico cuando además los tokens están altos
+### Notificar a Slack cuando aparece un error (out-of-band custom)
 
 ```python
-from instantneo.conditions import every_n_steps, And, when_tokens_above
-from instantneo.actions import summarize_with
+import requests
 
-monitor.register_rule(
-    And(every_n_steps(5), when_tokens_above("agent_default", 50_000)),
-    summarize_with(M),
-)
+def notify_slack(webhook_url):
+    def action(history):
+        last_err = history.by_type("error")[-1]
+        requests.post(webhook_url, json={"text": f"Error: {last_err.content['exception']}"})
+    return action
+
+monitor.add_rule(when_type_present("error"), notify_slack("https://hooks.slack.com/..."))
 ```
 
-### Monitor compartido entre dos histories
+### Persistir el History a disco cada N entries
+
+```python
+from pathlib import Path
+
+def persist_to_disk(path):
+    def action(history):
+        path.write_text(history.to_json())
+    return action
+
+monitor.add_rule(every_n_appends(50), persist_to_disk(Path("session.json")))
+```
+
+### Monitor compartido entre dos Loops sobre el mismo History
 
 ```python
 shared = Monitor(name="shared")
-shared.register_rule(when_type_present("error"), stop_with("err"))
+shared.add_rule(when_type_present("error"), stop_signal("err"))
 
-history_a = History(monitors=shared)
-history_b = History(monitors=shared)
-# Ambas usan la misma instancia. Registrar otra regla en shared se propaga a las dos.
+history = History()
+loop_A = InstantLoop(agent=A, history=history, monitors=shared)
+loop_B = InstantLoop(agent=B, history=history, monitors=shared)
+# Ambos Loops invocan la misma instancia de Monitor. Mutarla afecta a los dos.
 ```
 
 ### Composición de monitors temáticos
 
 ```python
-context_monitor = Monitor(name="context")
-context_monitor.register_rule(when_tokens_above("default", 100_000), summarize_with(M))
-
 audit_monitor = Monitor(name="audit")
-audit_monitor.register_rule(every_n_steps(10), write_progress(run_dir))
+audit_monitor.add_rule(every_n_steps(10), write_progress(run_dir))
 
-history = History(monitors=[context_monitor, audit_monitor])
-# history.monitor es la unión (snapshot estático)
+alert_monitor = Monitor(name="alerts")
+alert_monitor.add_rule(when_type_present("error"), notify_slack(webhook))
+
+loop = InstantLoop(agent=A, history=history, monitors=[audit_monitor, alert_monitor])
+# loop.monitor es la unión (snapshot estático)
 ```
 
 ---
@@ -382,33 +504,25 @@ history = History(monitors=[context_monitor, audit_monitor])
 Tests del Monitor:
 
 - `test_monitor_constructor_with_optional_name`
-- `test_register_rule_appends_to_internal_list`
-- `test_evaluate_fires_when_condition_true`
-- `test_evaluate_skips_when_condition_false`
+- `test_add_rule_appends_to_internal_list`
+- `test_call_fires_when_condition_true`
+- `test_call_skips_when_condition_false`
 - `test_rules_run_in_registration_order`
-- `test_action_appends_visible_to_subsequent_rules_in_same_evaluate`
+- `test_action_appends_visible_to_subsequent_rules_in_same_call`
+- `test_monitor_is_callable_as_function`
 
 Tests de `MonitorOperations.union`:
 
 - `test_union_combines_rules_in_registration_order`
 - `test_union_does_not_mutate_inputs`
 
-Tests de attachment a History:
-
-- `test_history_default_has_empty_monitor`
-- `test_history_with_single_monitor_uses_same_instance`
-- `test_history_with_list_of_monitors_uses_union`
-- `test_history_register_rule_proxies_to_monitor`
-- `test_history_evaluate_monitor_calls_monitor_evaluate_with_self`
-
 Tests de conditions built-in (uno por cada): `when_entry_count_above`, `when_type_count_above`, `when_author_count_above`, `when_type_present`, `when_last_is_type`, `when_last_is_author`, `when_last_content_matches`, `when_tokens_above` (default y custom tokenizer), `every_n_steps`, `at_step`, `And`/`Or`/`Not`.
 
-Tests de actions built-in: `stop_with`, `summarize_with`, `append_note`.
+Tests de actions built-in: `stop_signal`, `append_note`.
 
 ---
 
 ## Pendiente (a documentar en próximas vueltas)
 
-- **Loop**: cómo invoca `history.evaluate_monitor()` en su flujo y cómo lee `stop_signal` para romper.
-- **Bridge** `run_info_to_entries`: types canónicos producidos desde `RunInfo` (`response`, `tool_call`).
 - **Layout final** de los módulos: si `conditions` y `actions` viven en archivos separados o agrupados en `instantneo/utils.py`.
+- **Helpers de queries** (`current_run_id`, `current_origin`, `current_step_num`): viven en `instantneo/history/queries.py` y son consumidos por las built-in actions y por las custom del usuario. Documentación detallada en `loop-design.md`.
