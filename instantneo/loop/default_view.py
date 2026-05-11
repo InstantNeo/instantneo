@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from instantneo.history.queries import (
-    current_run_id, current_run_config, current_step_num,
+    current_run_id, current_run_config,
 )
 
 if TYPE_CHECKING:
@@ -225,7 +225,17 @@ def loop_default(
 
     cfg = current_run_config(history) or {}
     max_steps = cfg.get("loop", {}).get("max_steps", "?")
-    current_step = current_step_num(history) or 0
+
+    # `current_step` representa el step que está por ejecutarse en
+    # este render. El Loop appendea `step_start` DESPUÉS de invocar la
+    # vista, así que `current_step_num` apunta al step previo (o None
+    # antes del primer step). Para reflejar el step actual contamos
+    # cuántos step_starts del run ya pasaron y sumamos 1.
+    run_step_starts = [
+        e for e in history.by_type("step_start")
+        if isinstance(e.content, dict) and e.content.get("run_id") == rid
+    ]
+    current_step = len(run_step_starts) + 1
 
     text = _markdown_format_default(
         entries,

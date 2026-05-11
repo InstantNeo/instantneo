@@ -181,28 +181,32 @@ def test_loop_default_image_policy_none() -> None:
     assert rp.image_detail is None
 
 
-def test_loop_default_image_policy_first_only_in_step_1() -> None:
-    h = _setup_history_with_run(
-        user_images=[{"source": "img.jpg"}],
-        image_detail="low",
-        n_steps=0,  # step_num será 0, NO incluye porque current_step != 1
-    )
-    # current_step_num devuelve None cuando no hay step_start → 0
-    rp = loop_default(h, image_policy="first_only")
-    assert rp.images is None  # step 0 no es 1
-
-
-def test_loop_default_image_policy_first_only_in_step_1_with_step_start() -> None:
+def test_loop_default_image_policy_first_only_in_first_render() -> None:
+    """En el primer render del run (antes de que el Loop appendee
+    step_start del step 1), first_only DEBE incluir la imagen: la vista
+    se evalúa para preparar el step 1 que está por ejecutarse."""
     h = _setup_history_with_run(
         user_images=[{"source": "img.jpg"}],
         image_detail="low",
         n_steps=0,
     )
-    # Agregar step_start del step 1
+    rp = loop_default(h, image_policy="first_only")
+    assert rp.images == ["img.jpg"]
+
+
+def test_loop_default_image_policy_first_only_excludes_after_first_step() -> None:
+    """Después de ejecutado el step 1 (cuando ya hay step_start del
+    step 1 en el History), la vista se evalúa para preparar el step 2.
+    first_only NO debe incluir la imagen en ese render."""
+    h = _setup_history_with_run(
+        user_images=[{"source": "img.jpg"}],
+        image_detail="low",
+        n_steps=0,
+    )
     h.append(author="orchestrator", type="step_start",
              content={"origin": "test_loop", "run_id": "run-001", "step_num": 1})
     rp = loop_default(h, image_policy="first_only")
-    assert rp.images == ["img.jpg"]
+    assert rp.images is None
 
 
 def test_loop_default_no_images_in_prompt_returns_none() -> None:
@@ -262,9 +266,10 @@ if __name__ == "__main__":
         ("loop_default_show_all_runs_true_includes_old_entries", test_loop_default_show_all_runs_true_includes_old_entries),
         ("loop_default_image_policy_every_turn",       test_loop_default_image_policy_every_turn),
         ("loop_default_image_policy_none",             test_loop_default_image_policy_none),
-        ("loop_default_image_policy_first_only_in_step_1", test_loop_default_image_policy_first_only_in_step_1),
-        ("loop_default_image_policy_first_only_in_step_1_with_step_start",
-         test_loop_default_image_policy_first_only_in_step_1_with_step_start),
+        ("loop_default_image_policy_first_only_in_first_render",
+         test_loop_default_image_policy_first_only_in_first_render),
+        ("loop_default_image_policy_first_only_excludes_after_first_step",
+         test_loop_default_image_policy_first_only_excludes_after_first_step),
         ("loop_default_no_images_in_prompt_returns_none", test_loop_default_no_images_in_prompt_returns_none),
         ("markdown_format_includes_turn_header",       test_markdown_format_includes_turn_header),
         ("markdown_format_includes_max_steps_in_header", test_markdown_format_includes_max_steps_in_header),
