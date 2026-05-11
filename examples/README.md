@@ -1,4 +1,4 @@
-# Ejemplos de InstantNeo v2
+# Ejemplos de InstantNeo + InstantLoop
 
 Ejemplos progresivos, pensados para devs. Cada uno toma un caso funcional
 real y muestra cómo se resuelve. Vamos de lo más simple a lo más complejo,
