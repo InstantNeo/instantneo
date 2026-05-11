@@ -14,7 +14,7 @@ El módulo lleva prefijo "_" para señalizar que es base interna; no se
 expone como provider público (no se usa con `InstantNeo(provider="...")`).
 """
 
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Optional
 
 from instantneo.adapters.base_adapter import BaseAdapter
 from instantneo.fetchers._chat_completions import (
@@ -32,6 +32,34 @@ from instantneo.models.standard import (
     StandardToolCall,
     StandardUsage,
 )
+
+
+def _normalize_tool_arguments(raw: Optional[str]) -> str:
+    """Normaliza el ``arguments`` de un tool_call al contrato Standard.
+
+    Bug observado: algunos providers chat-completions (notablemente
+    Groq con Llama 3.x) devuelven ``arguments: "null"`` o cadena vacía
+    cuando la tool no requiere args. Eso rompe el flow del core:
+    ``json.loads("null") = None`` y luego ``tool_func(**None)`` levanta
+    ``TypeError: argument after ** must be a mapping, not NoneType``.
+
+    La spec interna (``StandardToolCall.arguments``) es siempre un
+    JSON-string de un dict. Normalizamos cualquier valor "vacío" o
+    "null" a ``"{}"``.
+
+    Casos cubiertos:
+    - ``None``        → ``"{}"``
+    - ``""``          → ``"{}"``
+    - ``"null"``      → ``"{}"``
+    - ``"   "``       → ``"{}"``
+    - ``'{"k": "v"}'``→ pasado intacto
+    """
+    if raw is None:
+        return "{}"
+    stripped = raw.strip()
+    if stripped in ("", "null"):
+        return "{}"
+    return raw
 
 
 class ChatCompletionsAdapter(BaseAdapter):
@@ -260,7 +288,14 @@ class ChatCompletionsAdapter(BaseAdapter):
                 StandardToolCall(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=tc.function.arguments,
+                    # Normalizar: algunos providers chat-completions
+                    # (Groq notablemente) devuelven `arguments: "null"` o
+                    # cadena vacía cuando la tool no requiere args. La
+                    # spec interna manda que `arguments` sea siempre un
+                    # JSON-string de dict; normalizamos a "{}" para que
+                    # `json.loads(...)` produzca `{}` y `tool_func(**{})`
+                    # funcione.
+                    arguments=_normalize_tool_arguments(tc.function.arguments),
                 )
                 for tc in choice.message.tool_calls
             ]

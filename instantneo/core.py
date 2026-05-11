@@ -817,7 +817,13 @@ Args:
         for tool_call in tool_calls:
             if tool_call.type == 'function':
                 function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
+                # `or {}` defensivo: si por cualquier ruta el adapter
+                # dejó pasar args == None / "null" (JSON parsea a None),
+                # tratamos como llamada sin args en lugar de crashear con
+                # `tool_func(**None)`. El adapter ya normaliza a "{}"
+                # (ver `_chat_completions._normalize_tool_arguments`),
+                # esto es cinturón de seguridad para otras rutas.
+                function_args = json.loads(tool_call.function.arguments) or {}
                 #print(f"Llamando a la función: {function_name} con argumentos: {function_args}")
 
                 if function_name in self.get_tool_names():
