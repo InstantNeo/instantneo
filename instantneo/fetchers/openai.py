@@ -516,7 +516,7 @@ class OpenAIClient:
                 try:
                     error_data = response.json()
                     error_message = error_data.get('error', {}).get('message', 'Unknown error')
-                except:
+                except Exception:
                     error_message = f"HTTP {response.status_code}: {response.text}"
 
                 raise httpx.HTTPStatusError(

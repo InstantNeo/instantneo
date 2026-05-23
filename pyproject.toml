@@ -25,13 +25,16 @@ classifiers = [
 dependencies = [
     "docstring_parser",
     "httpx",
-    "cryptography",
     "pyyaml",
 ]
 
 [project.optional-dependencies]
+vertexai = [
+    "cryptography",
+]
 dev = [
     "pytest",
+    "pytest-cov",
 ]
 
 [project.urls]
