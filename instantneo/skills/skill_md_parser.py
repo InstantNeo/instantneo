@@ -7,12 +7,15 @@ El formato SKILL.md consiste en:
 - Body en Markdown con instrucciones
 """
 
+import logging
 import re
 import yaml
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 from .agent_skill import AgentSkill
+
+logger = logging.getLogger(__name__)
 
 
 class SkillMdParser:
@@ -153,7 +156,7 @@ class SkillMdParser:
                                     "path": str(folder),
                                     "type": "skill_folder"
                                 })
-                    except Exception as e:
-                        print(f"Error parseando {folder}: {e}")
+                    except Exception:
+                        logger.exception("Error parseando %s", folder)
 
         return discoveries
