@@ -83,6 +83,7 @@ def test_image_detail_url_payload_stored_roundtrip() -> None:
     fake_response = MagicMock()
     fake_response.content = _TINY_PNG_BYTES
     fake_response.headers = {"content-type": "image/png"}
+    fake_response.is_redirect = False
     fake_response.raise_for_status = MagicMock(return_value=None)
 
     client_mock = MagicMock()
@@ -90,7 +91,12 @@ def test_image_detail_url_payload_stored_roundtrip() -> None:
     client_mock.__enter__ = MagicMock(return_value=client_mock)
     client_mock.__exit__ = MagicMock(return_value=False)
 
-    with patch("instantneo.utils.image_utils.httpx.Client", return_value=client_mock):
+    # getaddrinfo fijo a IP pública: evita DNS real y pasa la validación anti-SSRF.
+    def _fake_getaddrinfo(*_a, **_k):
+        return [(2, 1, 6, "", ("93.184.216.34", 443))]
+
+    with patch("instantneo.utils.image_utils.httpx.Client", return_value=client_mock), \
+         patch("instantneo.utils.image_utils.socket.getaddrinfo", _fake_getaddrinfo):
         images = process_images("https://example.com/img.png", "low")
 
     assert images[0]["image_url"]["detail"] == "low"
