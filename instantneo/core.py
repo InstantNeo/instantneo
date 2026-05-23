@@ -2,9 +2,12 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Callable, Optional, Union, Generator, Type, AsyncGenerator
 import asyncio
 import json
+import logging
 import time
 import threading
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 from instantneo.skills.agent_capabilities import AgentCapabilities
 from instantneo.skills.agent_capabilities import AgentCapabilities as SkillManager  # backward compat
 from instantneo.models.run_info import RunInfo, LLMCall, ToolExecution, SkillExecution
@@ -657,14 +660,13 @@ Args:
                 if tool_info and 'parameters' in tool_info:
                     formatted_tools.append(format_tool(tool_info))
                 else:
-                    print(f"Warning: Tool '{name}' is missing metadata or 'parameters'. Skipping.")
+                    logger.warning("Tool '%s' is missing metadata or 'parameters'. Skipping.", name)
 
             if formatted_tools:
                 adapter_params.additional_params['tools'] = formatted_tools
                 if 'tool_choice' in run_params.additional_params:
                     adapter_params.additional_params['tool_choice'] = run_params.additional_params['tool_choice']
 
-        #print("Adapter params:", json.dumps(adapter_params.to_dict(), indent=2))
 
         # Create RunInfo to capture metadata
         run_info = RunInfo(
@@ -717,7 +719,7 @@ Args:
             if tool_func:
                 active_tools[tool_name] = tool_func
             else:
-                print(f"Warning: Tool '{tool_name}' not found in AgentCapabilities.")
+                logger.warning("Tool '%s' not found in AgentCapabilities.", tool_name)
 
         return active_tools
 
@@ -825,7 +827,7 @@ Args:
         reasoning = getattr(message, 'reasoning', None)
 
         if tool_calls:
-            print(f'{"*" * 40}\n* {"I am using my skills. Wait for it...":^36} *\n{"*" * 40}\n')
+            logger.debug("Executing %d tool call(s)", len(tool_calls))
             results = self._handle_tool_calls(tool_calls, execution_mode, run_info)
             result = {
                 "text": content if content else None,
@@ -843,7 +845,6 @@ Args:
         """Handle tool calls from the language model."""
         results = []
         futures = []  # Para almacenar futures en caso de ejecución asíncrona
-        #print(f"DEBUG: Valor de self.async_execution en _handle_tool_calls: {self.async_execution}")
 
         for tool_call in tool_calls:
             if tool_call.type == 'function':
@@ -855,7 +856,6 @@ Args:
                 # (ver `_chat_completions._normalize_tool_arguments`),
                 # esto es cinturón de seguridad para otras rutas.
                 function_args = json.loads(tool_call.function.arguments) or {}
-                #print(f"Llamando a la función: {function_name} con argumentos: {function_args}")
 
                 if function_name in self.get_tool_names():
                     tool_func = self.get_tool_by_name(function_name)
@@ -904,7 +904,7 @@ Args:
                     if run_info:
                         run_info.tool_executions.append(tool_exec)
                 else:
-                    print(f"Warning: Tool '{function_name}' not found in available tools.")
+                    logger.warning("Tool '%s' not found in available tools.", function_name)
 
         # Si estamos en modo WAIT_RESPONSE y async_execution=True, ejecutamos todas las corrutinas
         # de manera síncrona para esperar los resultados
@@ -926,10 +926,8 @@ Args:
                 else:
                     # Si el loop no está corriendo, simplemente ejecutamos gather
                     results = loop.run_until_complete(asyncio.gather(*results))
-
-                #print(f"Resultados de ejecución asíncrona: {results}")
-            except Exception as e:
-                print(f"Error al ejecutar corrutinas de manera asíncrona: {e}")
+            except Exception:
+                logger.exception("Error al ejecutar corrutinas de manera asíncrona")
 
         # Si estamos en modo EXECUTION_ONLY y async_execution=True, esperamos a que terminen las ejecuciones
         if execution_mode == self.EXECUTION_ONLY and self.async_execution and futures:
@@ -947,7 +945,7 @@ Args:
                 else:
                     loop.run_until_complete(asyncio.gather(*futures))
             except Exception as e:
-                print(f"Error al ejecutar corrutinas en modo EXECUTION_ONLY: {e}")
+                logger.exception("Error al ejecutar corrutinas en modo EXECUTION_ONLY")
 
         if execution_mode == self.EXECUTION_ONLY:
             return "Todas las funciones se han ejecutado en segundo plano."
@@ -1081,7 +1079,7 @@ Args:
                         yield str(chunk)
             except Exception as e:
                 run_info.error = str(e)
-                print(f"Error inesperado: {e}")
+                logger.exception("Error inesperado durante el streaming")
 
         # Store accumulated reasoning in run_info
         llm_call.reasoning_content = accumulated_reasoning if accumulated_reasoning else None
@@ -1136,7 +1134,7 @@ Args:
                         else:
                             loop.run_until_complete(asyncio.gather(*futures))
                     except Exception as e:
-                        print(f"Error al ejecutar corrutinas en streaming: {e}")
+                        logger.exception("Error al ejecutar corrutinas en streaming")
 
                 yield {
                     "text": full_response if full_response else None,
@@ -1158,7 +1156,6 @@ Args:
                 }
             elif execution_mode == self.WAIT_RESPONSE and tool_calls:
                 # Para WAIT_RESPONSE, ejecutamos las herramientas y devolvemos los resultados
-                #print(f"DEBUG: En streaming, procesando herramientas en modo WAIT_RESPONSE con async_execution={self.async_execution}")
                 results = []
                 futures = []
 
@@ -1192,7 +1189,7 @@ Args:
                                 except Exception as e:
                                     tool_exec.exception = str(e)
                         else:
-                            print(f"Warning: Tool '{function_name}' not found in available tools.")
+                            logger.warning("Tool '%s' not found in available tools.", function_name)
 
                         run_info.tool_executions.append(tool_exec)
 
@@ -1214,10 +1211,8 @@ Args:
                         else:
                             results = loop.run_until_complete(
                                 asyncio.gather(*futures))
-
-                        #print(f"Resultados de ejecución asíncrona en streaming: {results}")
                     except Exception as e:
-                        print(f"Error al ejecutar corrutinas en streaming con WAIT_RESPONSE: {e}")
+                        logger.exception("Error al ejecutar corrutinas en streaming con WAIT_RESPONSE")
 
 
                 # Devolvemos los resultados
