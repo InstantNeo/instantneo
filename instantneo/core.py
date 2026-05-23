@@ -735,7 +735,7 @@ Args:
         """Process images according to the configuration."""
         if not self.adapter.supports_images():
             raise ValueError(
-                f"El proveedor actual no soporta el procesamiento de imágenes")
+                "El proveedor actual no soporta el procesamiento de imágenes")
         return process_images(image_config.images, image_config.image_detail)
 
     def get_resolved_role_setup(self, shelf_context: Optional[str] = None) -> str:
@@ -858,8 +858,6 @@ Args:
                 function_args = json.loads(tool_call.function.arguments) or {}
 
                 if function_name in self.get_tool_names():
-                    tool_func = self.get_tool_by_name(function_name)
-
                     # Track tool execution
                     tool_exec = ToolExecution(
                         name=function_name,
