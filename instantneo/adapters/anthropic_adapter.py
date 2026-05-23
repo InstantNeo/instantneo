@@ -107,7 +107,7 @@ class AnthropicAdapter(BaseAdapter):
             return self._translate_response(response)
 
         except Exception as e:
-            raise RuntimeError(f"Error en Anthropic API: {str(e)}")
+            raise RuntimeError(f"Error en Anthropic API: {e}") from e
 
     def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
         """
@@ -161,7 +161,7 @@ class AnthropicAdapter(BaseAdapter):
                     yield translated
 
         except Exception as e:
-            raise RuntimeError(f"Error en Anthropic API streaming: {str(e)}")
+            raise RuntimeError(f"Error en Anthropic API streaming: {e}") from e
 
     def supports_images(self) -> bool:
         """Anthropic soporta imágenes desde Claude 3."""

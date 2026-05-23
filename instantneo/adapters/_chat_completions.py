@@ -114,7 +114,7 @@ class ChatCompletionsAdapter(BaseAdapter):
             )
             return self._translate_response(response)
         except Exception as e:
-            raise RuntimeError(f"Error en {self.get_provider_name()} API: {e}")
+            raise RuntimeError(f"Error en {self.get_provider_name()} API: {e}") from e
 
     def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
         """Completion streaming."""
@@ -146,7 +146,7 @@ class ChatCompletionsAdapter(BaseAdapter):
             for chunk in stream:
                 yield self._translate_stream_chunk(chunk)
         except Exception as e:
-            raise RuntimeError(f"Error en {self.get_provider_name()} API streaming: {e}")
+            raise RuntimeError(f"Error en {self.get_provider_name()} API streaming: {e}") from e
 
     def supports_images(self) -> bool:
         """La mayoría de chat/completions providers ya soportan imágenes."""

@@ -56,11 +56,11 @@ def _create_jwt(
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding
         from cryptography.hazmat.backends import default_backend
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
             "El paquete 'cryptography' es requerido para autenticación con Service Account. "
-            "Instálalo con: pip install cryptography"
-        )
+            "Instálalo con: pip install instantneo[vertexai]"
+        ) from e
 
     now = int(time.time())
 

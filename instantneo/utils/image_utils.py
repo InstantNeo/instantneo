@@ -45,7 +45,7 @@ def _assert_fetchable_url(url: str, allowed_hosts: Optional[Iterable[str]] = Non
     try:
         addrinfo = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
-        raise ValueError(f"No se pudo resolver el host {host!r}: {e}")
+        raise ValueError(f"No se pudo resolver el host {host!r}: {e}") from e
 
     for *_, sockaddr in addrinfo:
         ip = ipaddress.ip_address(sockaddr[0])
@@ -175,7 +175,7 @@ def process_images(
                     }
                 })
             except Exception as e:
-                raise ValueError(f"Error descargando imagen desde {img_path}: {str(e)}")
+                raise ValueError(f"Error descargando imagen desde {img_path}: {e}") from e
         else:
             # Archivo local
             media_type = get_media_type_from_extension(img_path)
