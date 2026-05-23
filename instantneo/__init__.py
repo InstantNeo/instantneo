@@ -71,6 +71,22 @@ Otras piezas (importables vía subpackage, no top-level por minimalismo):
 Documentación de diseño: ``docs/design/`` (5 documentos).
 """
 
+# ── Versión (fuente única: pyproject.toml) ──────────────────────────
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("instantneo")
+except PackageNotFoundError:  # ejecutando desde el source sin instalar
+    __version__ = "0.0.0.dev0"
+
+# ── Logging ─────────────────────────────────────────────────────────
+# Patrón estándar de librería: adjuntamos un NullHandler para no emitir
+# nada por default. La app consumidora decide handlers/niveles, p.ej.
+# logging.getLogger("instantneo").setLevel(logging.DEBUG).
+import logging as _logging
+
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
 # ── Core (clásico) ──────────────────────────────────────────────────
 from .core import InstantNeo
 from .models.run_info import RunInfo
@@ -137,6 +153,7 @@ class Adapters:
 
 # Public surface
 __all__ = [
+    "__version__",
     # Core (clásico)
     "InstantNeo", "RunInfo",
     "tool", "AgentCapabilities", "CapabilitiesOperations",
