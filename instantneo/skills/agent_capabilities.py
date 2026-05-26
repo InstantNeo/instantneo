@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 import pkgutil
 import importlib
 import importlib.util
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from .agent_skill import AgentSkill
 from .skill_md_parser import SkillMdParser
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -89,7 +92,7 @@ class CapabilityLoader:
                     name = self.from_skill_folder(str(folder))
                     loaded.append(name)
                 except Exception as e:
-                    print(f"Error cargando {folder}: {e}")
+                    logger.exception("Error cargando %s", folder)
 
         return loaded
 
@@ -213,9 +216,13 @@ class AgentCapabilities:
             if simple_name not in self.duplicates:
                 self.duplicates[simple_name] = []
             self.duplicates[simple_name].append(func)
-            print(f"Advertencia: La tool '{simple_name}' ya fue registrada en "
-                  f"{self.registry_by_name[simple_name][0].__code__.co_filename}. "
-                  f"La definición en {file_path} se ha agregado al registro de duplicados.")
+            logger.warning(
+                "La tool '%s' ya fue registrada en %s. La definición en %s "
+                "se ha agregado al registro de duplicados.",
+                simple_name,
+                self.registry_by_name[simple_name][0].__code__.co_filename,
+                file_path,
+            )
         else:
             self.registry_by_name[simple_name] = [func]
 
@@ -293,7 +300,7 @@ class AgentCapabilities:
                     self._load_tools_from_module(module, metadata_filter)
                     del sys.modules[module_name]
                 except Exception as e:
-                    print(f"Error al cargar el archivo {file_path}: {e}")
+                    logger.exception("Error al cargar el archivo %s", file_path)
 
         return f"Tools Loaded:{self.get_tool_names()} from {folder_path}"
 
@@ -324,6 +331,32 @@ class AgentCapabilities:
 
     # Backward compat alias
     get_all_skills_metadata = get_all_tools_metadata
+
+    def get_schemas(self) -> List[Dict[str, Any]]:
+        """OpenAI-format tool schemas para todas las tools registradas.
+
+        Devuelve una lista de schemas ``{"type": "function", "function":
+        {"name", "description", "parameters": ...}}`` lista para
+        serializar. Útil para:
+
+        - Capturar la cabecera del agente en logs / `run_start` entries
+          de un orquestador (Loop, Pipeline futuro).
+        - Replay: saber qué tools tenía disponibles un agente en un
+          momento dado.
+        - Introspección externa sin invocar al LLM.
+
+        Reusa ``instantneo.utils.tool_utils.format_tool`` internamente.
+        Tools sin ``parameters`` en su metadata se skippean (mismo
+        comportamiento que el call site inline en
+        ``core.py:_run`` cuando arma `formatted_tools`).
+        """
+        from instantneo.utils.tool_utils import format_tool
+        schemas: List[Dict[str, Any]] = []
+        for _key, metadata in self.get_all_tools_metadata().items():
+            if not metadata or 'parameters' not in metadata:
+                continue
+            schemas.append(format_tool(metadata))
+        return schemas
 
     def get_tool_metadata_by_name(self, name: str) -> Dict[str, Any]:
         matches = {key: func for key, func in self.registry.items() if func.__name__ == name}
@@ -391,7 +424,7 @@ class AgentCapabilities:
                 self.registry_by_name.pop(name, None)
                 return True
             else:
-                print(f"Advertencia: Existen múltiples tools con el nombre '{name}'. Especifica el módulo para eliminar.")
+                logger.warning("Existen múltiples tools con el nombre '%s'. Especifica el módulo para eliminar.", name)
                 return False
 
     # Backward compat alias
@@ -488,7 +521,7 @@ class AgentCapabilities:
                         loaded = self._load_tools_from_file(str(full_path))
                         result["skills_loaded"].extend(loaded)
                     except Exception as e:
-                        print(f"Error cargando tools de {file_path}: {e}")
+                        logger.exception("Error cargando tools de %s", file_path)
 
         elif item_type == "manager":
             result["description"] = item.description or ""

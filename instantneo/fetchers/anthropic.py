@@ -57,6 +57,13 @@ class AnthropicClient:
             "content-type": "application/json",
         }
 
+    def _get_url(self, model: str, stream: bool = False) -> str:
+        """
+        Devuelve la URL del endpoint. Hook sobrescribible por subclases
+        (p. ej. clientes hosteados en Vertex AI).
+        """
+        return self.BASE_URL
+
     def _build_request_body(
         self,
         model: str,
@@ -253,7 +260,7 @@ class AnthropicClient:
 
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
-                self.BASE_URL,
+                self._get_url(model),
                 headers=headers,
                 json=body
             )
@@ -336,7 +343,7 @@ class AnthropicClient:
         )
 
         with httpx.Client(timeout=self.timeout) as client:
-            with client.stream("POST", self.BASE_URL, headers=headers, json=body) as response:
+            with client.stream("POST", self._get_url(model, stream=True), headers=headers, json=body) as response:
                 response.raise_for_status()
 
                 for line in response.iter_lines():

@@ -29,3 +29,27 @@ try:
     __all__.append('CerebrasAdapter')
 except ImportError:
     CerebrasAdapter = None
+
+try:
+    from .vertex_anthropic_adapter import VertexAnthropicAdapter
+    __all__.append('VertexAnthropicAdapter')
+except ImportError:
+    VertexAnthropicAdapter = None
+
+try:
+    from .vertex_gemini_adapter import VertexGeminiAdapter
+    __all__.append('VertexGeminiAdapter')
+except ImportError:
+    VertexGeminiAdapter = None
+
+try:
+    from .xai_adapter import XAIAdapter
+    __all__.append('XAIAdapter')
+except ImportError:
+    XAIAdapter = None
+
+try:
+    from .vertex_xai_adapter import VertexXAIAdapter
+    __all__.append('VertexXAIAdapter')
+except ImportError:
+    VertexXAIAdapter = None

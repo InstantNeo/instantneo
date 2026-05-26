@@ -1,12 +1,8 @@
 """
-Adapter para Google Gemini API.
+Adapter para Google Gemini API (Google AI Studio, con API Key).
 
-Traduce entre el formato estándar de InstantNeo y el formato de Gemini,
-utilizando los fetchers HTTP puros (GeminiClient o VertexAIClient).
-
-Soporta:
-- Gemini API (ai.google.dev) con API Key
-- Vertex AI Gemini con OAuth/Service Account
+Para Gemini hosteado en Vertex AI ver `adapters/vertex_gemini_adapter.py`,
+que hereda de este y solo intercambia el cliente HTTP.
 
 Diferencias clave de Gemini:
 - Los mensajes usan "parts" en lugar de "content" directo
@@ -42,72 +38,22 @@ from instantneo.models.gemini import (
 
 class GeminiAdapter(BaseAdapter):
     """
-    Adapter para Google Gemini API.
+    Adapter para Google Gemini API (Google AI Studio, con API Key).
 
-    Soporta dos backends:
-    - GeminiClient: Para Gemini API (ai.google.dev) con API Key
-    - VertexAIClient: Para Vertex AI con Service Account
-
-    Uso con Gemini API:
+    Uso:
         adapter = GeminiAdapter(api_key="AI...")
 
-    Uso con Vertex AI:
-        adapter = GeminiAdapter(
-            location="us-central1",
-            service_account_file="path/to/key.json"
-        )
+    Para Vertex AI ver `VertexGeminiAdapter`, que hereda de éste y solo
+    intercambia el cliente HTTP.
     """
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        location: Optional[str] = None,
-        service_account_file: Optional[str] = None,
-        service_account_info: Optional[Dict[str, Any]] = None,
-        access_token: Optional[str] = None,
-    ):
+    def __init__(self, api_key: str):
         """
-        Inicializa el adapter con el cliente HTTP apropiado.
-
-        Para Gemini API (ai.google.dev):
-            GeminiAdapter(api_key="AI...")
-
-        Para Vertex AI con Service Account (recomendado):
-            GeminiAdapter(
-                location="us-central1",
-                service_account_file="path/to/key.json"
-            )
-
-        Para Vertex AI con Access Token:
-            GeminiAdapter(location="us-central1", access_token="ya29...")
-
         Args:
-            api_key: API key de Google AI Studio (para Gemini API)
-            location: Región de Vertex AI (ej: "us-central1")
-            service_account_file: Ruta al archivo JSON del service account
-            service_account_info: Dict con la información del service account
-            access_token: Token de acceso OAuth directo (para Vertex AI)
+            api_key: API key de Google AI Studio.
         """
-        if api_key:
-            from instantneo.fetchers.gemini import GeminiClient
-            self.client = GeminiClient(api_key=api_key)
-            self._backend = "gemini"
-        elif service_account_file or service_account_info or access_token:
-            if not location:
-                raise ValueError("location es requerido para Vertex AI")
-            from instantneo.fetchers.vertexai import VertexAIClient
-            self.client = VertexAIClient(
-                location=location,
-                service_account_file=service_account_file,
-                service_account_info=service_account_info,
-                access_token=access_token,
-            )
-            self._backend = "vertexai"
-        else:
-            raise ValueError(
-                "Debe proporcionar api_key (para Gemini API) o "
-                "service_account_file/service_account_info (para Vertex AI)"
-            )
+        from instantneo.fetchers.gemini import GeminiClient
+        self.client = GeminiClient(api_key=api_key)
 
     def complete(self, request: StandardRequest) -> StandardResponse:
         """
@@ -192,7 +138,7 @@ class GeminiAdapter(BaseAdapter):
 
     def get_provider_name(self) -> str:
         """Devuelve el nombre del proveedor."""
-        return self._backend
+        return "gemini"
 
     # =========================================================================
     # MÉTODOS DE TRADUCCIÓN: StandardRequest → Gemini
@@ -440,6 +386,9 @@ class GeminiAdapter(BaseAdapter):
                 input_tokens=response.usage_metadata.prompt_token_count,
                 output_tokens=response.usage_metadata.candidates_token_count,
                 total_tokens=response.usage_metadata.total_token_count,
+                # Gemini 2.5+ expone thoughts_token_count en usage_metadata.
+                # Para modelos anteriores el atributo no existe; getattr → None.
+                reasoning_tokens=getattr(response.usage_metadata, 'thoughts_token_count', None),
             ),
             finish_reason=self._translate_finish_reason(candidate.finish_reason),
             raw_response=response,
@@ -496,6 +445,8 @@ class GeminiAdapter(BaseAdapter):
                 input_tokens=usage_data.get("promptTokenCount", 0),
                 output_tokens=usage_data.get("candidatesTokenCount", 0),
                 total_tokens=usage_data.get("totalTokenCount", 0),
+                # Gemini 2.5+ raw API: thoughtsTokenCount.
+                reasoning_tokens=usage_data.get("thoughtsTokenCount"),
             )
 
         # Si no hay contenido relevante, retornar None

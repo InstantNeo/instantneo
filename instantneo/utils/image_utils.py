@@ -86,7 +86,8 @@ def process_images(images: Union[str, List[str]], image_detail: str) -> List[Dic
                 processed_images.append({
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:{media_type};base64,{img_data}"
+                        "url": f"data:{media_type};base64,{img_data}",
+                        "detail": image_detail,
                     }
                 })
             except Exception as e:
@@ -98,7 +99,8 @@ def process_images(images: Union[str, List[str]], image_detail: str) -> List[Dic
             processed_images.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:{media_type};base64,{img_data}"
+                    "url": f"data:{media_type};base64,{img_data}",
+                    "detail": image_detail,
                 }
             })
 

@@ -2,9 +2,12 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Callable, Optional, Union, Generator, Type, AsyncGenerator
 import asyncio
 import json
+import logging
 import time
 import threading
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 from instantneo.skills.agent_capabilities import AgentCapabilities
 from instantneo.skills.agent_capabilities import AgentCapabilities as SkillManager  # backward compat
 from instantneo.models.run_info import RunInfo, LLMCall, ToolExecution, SkillExecution
@@ -83,6 +86,26 @@ class RunParams(BaseParams):
                 run_params.additional_params[key] = value
 
         return run_params
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Snapshot completo de los kwargs efectivos del run.
+
+        Diseñado para alimentar ``RunInfo.run_params`` y, vía el bridge,
+        quedar reflejado en ``Entry(type="response").content["run_params"]``.
+
+        Incluye todos los campos del dataclass excepto:
+
+        - ``prompt``: vive aparte en ``RunInfo.prompt``, no duplicar.
+        - ``additional_params``: se spreadea al top level (es lo que
+          espera el consumidor del snapshot — kwargs planos, no anidados).
+
+        Si querés ver exactamente qué pasó (e.g. ``reasoning="high"``,
+        ``image_detail="low"``, kwargs custom), todo aparece acá.
+        """
+        EXCLUDE = {"prompt", "additional_params"}
+        result = {k: v for k, v in self.__dict__.items() if k not in EXCLUDE}
+        result.update(self.additional_params)
+        return result
 
 
 @dataclass
@@ -637,14 +660,13 @@ Args:
                 if tool_info and 'parameters' in tool_info:
                     formatted_tools.append(format_tool(tool_info))
                 else:
-                    print(f"Warning: Tool '{name}' is missing metadata or 'parameters'. Skipping.")
+                    logger.warning("Tool '%s' is missing metadata or 'parameters'. Skipping.", name)
 
             if formatted_tools:
                 adapter_params.additional_params['tools'] = formatted_tools
                 if 'tool_choice' in run_params.additional_params:
                     adapter_params.additional_params['tool_choice'] = run_params.additional_params['tool_choice']
 
-        #print("Adapter params:", json.dumps(adapter_params.to_dict(), indent=2))
 
         # Create RunInfo to capture metadata
         run_info = RunInfo(
@@ -655,17 +677,7 @@ Args:
             stream=run_params.stream,
             timestamp=datetime.now(timezone.utc).isoformat(),
             messages_sent=messages,
-            run_params={
-                "model": run_params.model,
-                "temperature": run_params.temperature,
-                "max_tokens": run_params.max_tokens,
-                "presence_penalty": run_params.presence_penalty,
-                "frequency_penalty": run_params.frequency_penalty,
-                "stop": run_params.stop,
-                "seed": run_params.seed,
-                "execution_mode": run_params.execution_mode,
-                "stream": run_params.stream,
-            },
+            run_params=run_params.to_dict(),
         )
 
         start_time = time.perf_counter()
@@ -707,7 +719,7 @@ Args:
             if tool_func:
                 active_tools[tool_name] = tool_func
             else:
-                print(f"Warning: Tool '{tool_name}' not found in AgentCapabilities.")
+                logger.warning("Tool '%s' not found in AgentCapabilities.", tool_name)
 
         return active_tools
 
@@ -726,6 +738,47 @@ Args:
                 f"El proveedor actual no soporta el procesamiento de imágenes")
         return process_images(image_config.images, image_config.image_detail)
 
+    def get_resolved_role_setup(self, shelf_context: Optional[str] = None) -> str:
+        """System prompt final efectivo del agente.
+
+        Compone ``self.config.role_setup`` + ``self.tool_instructions``
+        (si las hay, generadas a partir de las tools registradas) +
+        ``shelf_context`` (si se pasa). Es exactamente el string que
+        el agente le manda al provider como mensaje ``system`` en cada
+        run.
+
+        Útil para:
+
+        - **Logging / debug**: ver el system prompt completo sin
+          ejecutar el run.
+        - **Orquestadores**: capturar la cabecera en un ``run_start``
+          entry (Loop, Pipeline futuro).
+        - **Replay**: reconstruir exactamente lo que el agente "es"
+          en un momento dado.
+
+        Args:
+            shelf_context: contexto adicional (persistente + efímero)
+                que se inyecta al final del system prompt. None por
+                default — no se inyecta nada.
+
+        Returns:
+            String final del system prompt. Si ``role_setup`` no está
+            seteado y no hay ``tool_instructions`` ni ``shelf_context``,
+            devuelve ``""``.
+        """
+        final = self.config.role_setup or ""
+        if hasattr(self, 'tool_instructions') and self.tool_instructions:
+            final = f"{final}{self.tool_instructions}"
+        if shelf_context:
+            final = f"""{final}
+
+###################################
+## ACTIVE KNOWLEDGE (from shelf) ##
+###################################
+
+{shelf_context}"""
+        return final
+
     def _prepare_messages(
         self,
         prompt: str,
@@ -740,21 +793,11 @@ Args:
             shelf_context: Optional context from shelf (persistent + ephemeral)
         """
         messages = []
-        final_role_setup = self.config.role_setup
-
-        # 1. Agregar tool instructions
-        if hasattr(self, 'tool_instructions') and self.tool_instructions:
-            final_role_setup = f"{self.config.role_setup}{self.tool_instructions}"
-
-        # 2. Agregar shelf context (persistente + efímero)
-        if shelf_context:
-            final_role_setup = f"""{final_role_setup}
-
-###################################
-## ACTIVE KNOWLEDGE (from shelf) ##
-###################################
-
-{shelf_context}"""
+        # La lógica de construcción del system prompt vive en el método
+        # público `get_resolved_role_setup` (PR 6). Mantenemos
+        # `final_role_setup` como variable local para no cambiar la
+        # legibilidad del resto del método.
+        final_role_setup = self.get_resolved_role_setup(shelf_context)
 
         if self.config.role_setup:
             messages.append(
@@ -784,7 +827,7 @@ Args:
         reasoning = getattr(message, 'reasoning', None)
 
         if tool_calls:
-            print(f'{"*" * 40}\n* {"I am using my skills. Wait for it...":^36} *\n{"*" * 40}\n')
+            logger.debug("Executing %d tool call(s)", len(tool_calls))
             results = self._handle_tool_calls(tool_calls, execution_mode, run_info)
             result = {
                 "text": content if content else None,
@@ -802,13 +845,17 @@ Args:
         """Handle tool calls from the language model."""
         results = []
         futures = []  # Para almacenar futures en caso de ejecución asíncrona
-        #print(f"DEBUG: Valor de self.async_execution en _handle_tool_calls: {self.async_execution}")
 
         for tool_call in tool_calls:
             if tool_call.type == 'function':
                 function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-                #print(f"Llamando a la función: {function_name} con argumentos: {function_args}")
+                # `or {}` defensivo: si por cualquier ruta el adapter
+                # dejó pasar args == None / "null" (JSON parsea a None),
+                # tratamos como llamada sin args en lugar de crashear con
+                # `tool_func(**None)`. El adapter ya normaliza a "{}"
+                # (ver `_chat_completions._normalize_tool_arguments`),
+                # esto es cinturón de seguridad para otras rutas.
+                function_args = json.loads(tool_call.function.arguments) or {}
 
                 if function_name in self.get_tool_names():
                     tool_func = self.get_tool_by_name(function_name)
@@ -857,7 +904,7 @@ Args:
                     if run_info:
                         run_info.tool_executions.append(tool_exec)
                 else:
-                    print(f"Warning: Tool '{function_name}' not found in available tools.")
+                    logger.warning("Tool '%s' not found in available tools.", function_name)
 
         # Si estamos en modo WAIT_RESPONSE y async_execution=True, ejecutamos todas las corrutinas
         # de manera síncrona para esperar los resultados
@@ -879,10 +926,8 @@ Args:
                 else:
                     # Si el loop no está corriendo, simplemente ejecutamos gather
                     results = loop.run_until_complete(asyncio.gather(*results))
-
-                #print(f"Resultados de ejecución asíncrona: {results}")
-            except Exception as e:
-                print(f"Error al ejecutar corrutinas de manera asíncrona: {e}")
+            except Exception:
+                logger.exception("Error al ejecutar corrutinas de manera asíncrona")
 
         # Si estamos en modo EXECUTION_ONLY y async_execution=True, esperamos a que terminen las ejecuciones
         if execution_mode == self.EXECUTION_ONLY and self.async_execution and futures:
@@ -900,7 +945,7 @@ Args:
                 else:
                     loop.run_until_complete(asyncio.gather(*futures))
             except Exception as e:
-                print(f"Error al ejecutar corrutinas en modo EXECUTION_ONLY: {e}")
+                logger.exception("Error al ejecutar corrutinas en modo EXECUTION_ONLY")
 
         if execution_mode == self.EXECUTION_ONLY:
             return "Todas las funciones se han ejecutado en segundo plano."
@@ -969,6 +1014,7 @@ Args:
                             "input_tokens": chunk.usage.input_tokens,
                             "output_tokens": chunk.usage.output_tokens,
                             "total_tokens": chunk.usage.total_tokens,
+                            "reasoning_tokens": getattr(chunk.usage, "reasoning_tokens", None),
                         }
                         run_info.usage = llm_call.usage
 
@@ -1007,10 +1053,13 @@ Args:
                     # Capture usage from final chunk if present
                     if 'usage' in chunk_data and chunk_data['usage']:
                         usage_data = chunk_data['usage']
+                        completion_details = usage_data.get('completion_tokens_details') or {}
+                        output_details     = usage_data.get('output_tokens_details') or {}
                         llm_call.usage = {
                             "input_tokens": usage_data.get('prompt_tokens', usage_data.get('input_tokens', 0)),
                             "output_tokens": usage_data.get('completion_tokens', usage_data.get('output_tokens', 0)),
                             "total_tokens": usage_data.get('total_tokens', 0),
+                            "reasoning_tokens": completion_details.get('reasoning_tokens') or output_details.get('reasoning_tokens'),
                         }
                         run_info.usage = llm_call.usage
                 else:
@@ -1030,7 +1079,7 @@ Args:
                         yield str(chunk)
             except Exception as e:
                 run_info.error = str(e)
-                print(f"Error inesperado: {e}")
+                logger.exception("Error inesperado durante el streaming")
 
         # Store accumulated reasoning in run_info
         llm_call.reasoning_content = accumulated_reasoning if accumulated_reasoning else None
@@ -1085,7 +1134,7 @@ Args:
                         else:
                             loop.run_until_complete(asyncio.gather(*futures))
                     except Exception as e:
-                        print(f"Error al ejecutar corrutinas en streaming: {e}")
+                        logger.exception("Error al ejecutar corrutinas en streaming")
 
                 yield {
                     "text": full_response if full_response else None,
@@ -1107,7 +1156,6 @@ Args:
                 }
             elif execution_mode == self.WAIT_RESPONSE and tool_calls:
                 # Para WAIT_RESPONSE, ejecutamos las herramientas y devolvemos los resultados
-                #print(f"DEBUG: En streaming, procesando herramientas en modo WAIT_RESPONSE con async_execution={self.async_execution}")
                 results = []
                 futures = []
 
@@ -1141,7 +1189,7 @@ Args:
                                 except Exception as e:
                                     tool_exec.exception = str(e)
                         else:
-                            print(f"Warning: Tool '{function_name}' not found in available tools.")
+                            logger.warning("Tool '%s' not found in available tools.", function_name)
 
                         run_info.tool_executions.append(tool_exec)
 
@@ -1163,10 +1211,8 @@ Args:
                         else:
                             results = loop.run_until_complete(
                                 asyncio.gather(*futures))
-
-                        #print(f"Resultados de ejecución asíncrona en streaming: {results}")
                     except Exception as e:
-                        print(f"Error al ejecutar corrutinas en streaming con WAIT_RESPONSE: {e}")
+                        logger.exception("Error al ejecutar corrutinas en streaming con WAIT_RESPONSE")
 
 
                 # Devolvemos los resultados
@@ -1220,6 +1266,7 @@ Args:
                 "input_tokens": usage.input_tokens if hasattr(usage, 'input_tokens') else 0,
                 "output_tokens": usage.output_tokens if hasattr(usage, 'output_tokens') else 0,
                 "total_tokens": usage.total_tokens if hasattr(usage, 'total_tokens') else 0,
+                "reasoning_tokens": getattr(usage, "reasoning_tokens", None),
             }
             run_info.usage = llm_call.usage
 
@@ -1284,7 +1331,10 @@ Args:
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
             "cerebras": ("instantneo.adapters.cerebras_adapter", "CerebrasAdapter"),
             "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
-            "vertexai": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
+            "vertexai": ("instantneo.adapters.vertex_gemini_adapter", "VertexGeminiAdapter"),
+            "vertex_anthropic": ("instantneo.adapters.vertex_anthropic_adapter", "VertexAnthropicAdapter"),
+            "xai": ("instantneo.adapters.xai_adapter", "XAIAdapter"),
+            "vertex_xai": ("instantneo.adapters.vertex_xai_adapter", "VertexXAIAdapter"),
         }
 
         if self.config.provider not in adapter_map:
@@ -1295,7 +1345,7 @@ Args:
         adapter_class = getattr(module, class_name)
 
         # Handle different authentication methods
-        if self.config.provider == "vertexai":
+        if self.config.provider in ("vertexai", "vertex_anthropic", "vertex_xai"):
             if not self.config.service_account_file:
                 raise ValueError("service_account_file is required for Vertex AI provider")
             if not self.config.location:

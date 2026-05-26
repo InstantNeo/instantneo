@@ -1,33 +1,97 @@
 """InstantNeo Package
 
-This package provides the main interface to access InstantNeo's functionalities.
+Provides the main interface to InstantNeo's functionalities, including
+the v2 event-sourced orchestration stack: ``History``, ``Monitor``,
+``InstantLoop``, and the bridge ``append_entry_from_run``.
 
-Easy import:
+Quickstart (v2 — recomendado):
+
 ```python
-from instantneo import InstantNeo, tool, AgentCapabilities, CapabilitiesOperations
-# Or using backward-compat names:
-from instantneo import InstantNeo, skill, SkillManager, SkillManagerOperations
+from instantneo import InstantNeo, History, Monitor, InstantLoop, tool
+from instantneo.monitor.actions import stop_signal
+from instantneo.monitor.conditions import when_type_present
+
+@tool(description="Finaliza la tarea cuando ya respondiste todo",
+      parameters={"summary": {"description": "Resumen", "type": "str"}})
+def finalizar(summary: str) -> dict:
+    return {"summary": summary, "done": True}
+
+agent = InstantNeo(
+    provider="openai", model="gpt-5-mini", api_key="...",
+    role_setup="Sos un asistente. Cuando termines, llamá finalizar.",
+    tools=[finalizar],
+)
+
+loop = InstantLoop(agent=agent, name="my_loop", stop_tool="finalizar")
+result = loop.run("explicame qué es la fotosíntesis y luego finalizá")
+
+print(result.terminated_reason)   # "stop_signal"
+print(result.stop_reason)          # "agent called finalizar"
 ```
 
-Package structure:
-- instantneo.InstantNeo: Main class encapsulating InstantNeo's logic.
-- instantneo.Tools: Contains utilities related to tools.
-    - instantneo.Tools.tool: Decorator to define tools.
-    - instantneo.Tools.AgentCapabilities: Tool and capability registry.
-    - instantneo.Tools.CapabilitiesOperations: Set operations for capabilities.
-- instantneo.Adapters: Contains adapters for different providers.
-    - instantneo.Adapters.Groq: Adapter for Groq.
-    - instantneo.Adapters.Openai: Adapter for OpenAI.
-    - instantneo.Adapters.Anthropic: Adapter for Anthropic.
+Quickstart (uso clásico — agente solo, sin Loop):
+
+```python
+from instantneo import InstantNeo, tool, AgentCapabilities
+
+@tool(description="...", parameters={...})
+def my_tool(...): ...
+
+agent = InstantNeo(provider="openai", model="gpt-5-mini", api_key="...",
+                   role_setup="...", tools=[my_tool])
+response = agent.run("hola")
+```
+
+Public surface (top-level imports):
+
+Existentes:
+- ``InstantNeo``: clase principal del agente.
+- ``RunInfo``: dataclass de metadata de ejecución.
+- ``tool``, ``AgentCapabilities``, ``CapabilitiesOperations``: stack de tools.
+- ``Tools``, ``Skills``, ``Adapters``: namespaces de conveniencia.
+- ``skill``, ``SkillManager``, ``SkillManagerOperations``: aliases backward-compat.
+
+v2 (event-sourced orchestration):
+- ``History``, ``Entry``: log inmutable append-only de entries.
+- ``Monitor``: rule engine standalone para reactividad sobre History.
+- ``InstantLoop``, ``RunResult``: orquestador multi-turno.
+- ``append_entry_from_run``: bridge ``RunInfo → Entries``.
+- ``current_run_id``, ``current_origin``, ``current_run_config``,
+  ``current_step_num``: queries sobre ``run_start`` / ``step_start``.
+
+Otras piezas (importables vía subpackage, no top-level por minimalismo):
+- ``RenderedPrompt``, ``loop_default``: ``from instantneo.loop import ...``
+- ``TurnLog``, ``RunLog``: ``from instantneo.debug``,
+  ``from instantneo.loop import RunLog``.
+- Conditions/actions built-in del Monitor:
+  ``from instantneo.monitor.conditions import when_*``,
+  ``from instantneo.monitor.actions import stop_signal, append_note``.
+- ``MonitorOperations``: ``from instantneo.monitor import MonitorOperations``.
+
+Documentación de diseño: ``docs/design/`` (5 documentos).
 """
 
-# Importación de la clase principal
-from .core import InstantNeo
+# ── Versión (fuente única: pyproject.toml) ──────────────────────────
+from importlib.metadata import version, PackageNotFoundError
 
-# Importación de modelos de metadata de ejecución
+try:
+    __version__ = version("instantneo")
+except PackageNotFoundError:  # ejecutando desde el source sin instalar
+    __version__ = "0.0.0.dev0"
+
+# ── Logging ─────────────────────────────────────────────────────────
+# Patrón estándar de librería: adjuntamos un NullHandler para no emitir
+# nada por default. La app consumidora decide handlers/niveles, p.ej.
+# logging.getLogger("instantneo").setLevel(logging.DEBUG).
+import logging as _logging
+
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+# ── Core (clásico) ──────────────────────────────────────────────────
+from .core import InstantNeo
 from .models.run_info import RunInfo
 
-# New canonical imports
+# New canonical imports (tools stack)
 from .skills.tool_decorators import tool
 from .skills.agent_capabilities import AgentCapabilities
 from .skills.capabilities_operations import CapabilitiesOperations
@@ -37,8 +101,7 @@ from .skills.tool_decorators import skill
 from .skills.agent_capabilities import AgentCapabilities as SkillManager
 from .skills.capabilities_operations import CapabilitiesOperations as SkillManagerOperations
 
-# Importaciones para Adapters - Usando importación condicional
-
+# Adapters — importación condicional
 try:
     from .adapters.openai_adapter import OpenAIAdapter
 except ImportError:
@@ -54,31 +117,54 @@ try:
 except ImportError:
     GroqAdapter = None
 
-# New namespace
+
+# ── v2: History + Monitor + Loop + queries + bridge ─────────────────
+from .history import History, Entry
+from .history.from_run_info import append_entry_from_run
+from .history.queries import (
+    current_run_id, current_origin, current_run_config, current_step_num,
+)
+from .monitor import Monitor
+from .loop import InstantLoop, RunResult
+
+
+# ── Namespaces de conveniencia ──────────────────────────────────────
+
 class Tools:
     """Tools toolkit"""
     tool = tool
     AgentCapabilities = AgentCapabilities
     CapabilitiesOperations = CapabilitiesOperations
 
-# Backward compat namespace
+
 class Skills:
     """Skills toolkit (backward compat alias for Tools)"""
     skill = skill
     SkillManager = SkillManager
     SkillManagerOperations = SkillManagerOperations
 
-# Namespace para Adapters
+
 class Adapters:
     """Adapters for different providers"""
     Groq = GroqAdapter
     Openai = OpenAIAdapter
     Anthropic = AnthropicAdapter
 
-# Definir qué se exporta
+
+# Public surface
 __all__ = [
+    "__version__",
+    # Core (clásico)
     "InstantNeo", "RunInfo",
     "tool", "AgentCapabilities", "CapabilitiesOperations",
     "skill", "SkillManager", "SkillManagerOperations",
     "Tools", "Skills", "Adapters",
+
+    # v2 — event-sourced orchestration
+    "History", "Entry",
+    "Monitor",
+    "InstantLoop", "RunResult",
+    "append_entry_from_run",
+    "current_run_id", "current_origin",
+    "current_run_config", "current_step_num",
 ]

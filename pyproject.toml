@@ -1,3 +1,46 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "instantneo"
+version = "0.3.0"
+description = "Framework para construir agentes con LLMs, con control granular y composición simple."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Diego Ponce de León Franco", email = "dponcedeleonf@gmail.com" },
+]
+keywords = ["llm", "agents", "ai", "openai", "anthropic", "groq", "gemini", "vertex ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    "docstring_parser",
+    "httpx",
+    "cryptography",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/instantneo/instantneo"
+Source = "https://github.com/instantneo/instantneo"
+"Bug Reports" = "https://github.com/instantneo/instantneo/issues"
+
+[tool.setuptools.packages.find]
+include = ["instantneo*"]
+
+[tool.setuptools.package-data]
+instantneo = ["py.typed"]
