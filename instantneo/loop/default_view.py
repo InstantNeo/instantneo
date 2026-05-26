@@ -192,13 +192,18 @@ def loop_default(
     *,
     show_all_runs: bool = False,
     image_policy: Literal["every_turn", "first_only", "none"] = "every_turn",
+    origin: Optional[str] = None,
 ) -> RenderedPrompt:
     """Vista default del Loop. Texto markdown + imágenes según policy.
 
     Doc: docs/design/loop-design.md sección "Implementación" (línea 690).
 
     Comportamiento de texto:
-      - Filtra por run_id actual salvo que show_all_runs=True.
+      - Si ``origin`` está set: filtra por ``content["origin"] == origin``.
+        Muestra todos los runs de ese loop. Concurrent-safe para multi-loop.
+      - Si ``show_all_runs=True``: muestra todo el History sin filtro.
+      - Default (sin origin, sin show_all_runs): filtra por run_id actual
+        (comportamiento legacy, correcto para loop único).
       - Solo incluye entries narrativas: prompt, response, tool_call.
       - Renderea reasoning del response (extended thinking) como bloque
         distinguible.
@@ -213,28 +218,69 @@ def loop_default(
         - "every_turn" (default): incluye en cada step.
         - "first_only":           solo en step 1.
         - "none":                 nunca.
-    """
-    rid = current_run_id(history)
-    entries = [
-        e for e in history.all()
-        if (show_all_runs or (
-            isinstance(e.content, dict) and e.content.get("run_id") == rid
-        ))
-        and e.type in {"prompt", "response", "tool_call"}
-    ]
 
-    cfg = current_run_config(history) or {}
+    Args:
+        origin: nombre del loop (``loop.name``). Cuando está set, filtra
+            por ``content["origin"]`` en vez de por run_id — correcto en
+            escenarios multi-loop concurrentes. El Loop lo bake-a en el
+            closure al registrar la vista, así que el user no lo pasa
+            directamente salvo en vistas custom.
+    """
+    # ── Determinar modo de filtrado ────────────────────────────────
+    if show_all_runs:
+        entries = [
+            e for e in history.all()
+            if e.type in {"prompt", "response", "tool_call"}
+        ]
+        cfg = current_run_config(history) or {}
+        current_rid = None
+        run_step_starts = history.by_type("step_start")
+
+    elif origin is not None:
+        # Multi-loop: filtrar por origin (concurrent-safe).
+        # Muestra todos los runs de este loop.
+        entries = [
+            e for e in history.all()
+            if isinstance(e.content, dict)
+            and e.content.get("origin") == origin
+            and e.type in {"prompt", "response", "tool_call"}
+        ]
+        # Para max_steps y current_step: leer del último run_start de este origin.
+        origin_run_starts = [
+            e for e in history.by_type("run_start")
+            if isinstance(e.content, dict) and e.content.get("origin") == origin
+        ]
+        cfg = origin_run_starts[-1].content if origin_run_starts else {}
+        current_rid = cfg.get("run_id")
+        run_step_starts = [
+            e for e in history.by_type("step_start")
+            if isinstance(e.content, dict)
+            and e.content.get("origin") == origin
+            and e.content.get("run_id") == current_rid
+        ]
+
+    else:
+        # Legacy: un solo loop. Filtrar por run_id actual.
+        rid = current_run_id(history)
+        entries = [
+            e for e in history.all()
+            if isinstance(e.content, dict)
+            and e.content.get("run_id") == rid
+            and e.type in {"prompt", "response", "tool_call"}
+        ]
+        cfg = current_run_config(history) or {}
+        current_rid = rid
+        run_step_starts = [
+            e for e in history.by_type("step_start")
+            if isinstance(e.content, dict) and e.content.get("run_id") == rid
+        ]
+
+    # ── Header: turno actual y máximo ─────────────────────────────
     max_steps = cfg.get("loop", {}).get("max_steps", "?")
 
-    # `current_step` representa el step que está por ejecutarse en
-    # este render. El Loop appendea `step_start` DESPUÉS de invocar la
-    # vista, así que `current_step_num` apunta al step previo (o None
-    # antes del primer step). Para reflejar el step actual contamos
-    # cuántos step_starts del run ya pasaron y sumamos 1.
-    run_step_starts = [
-        e for e in history.by_type("step_start")
-        if isinstance(e.content, dict) and e.content.get("run_id") == rid
-    ]
+    # `current_step` = step que está por ejecutarse.
+    # El Loop appendea `step_start` DESPUÉS de invocar la vista, así que
+    # contamos los step_starts ya presentes y sumamos 1.
     current_step = len(run_step_starts) + 1
 
     text = _markdown_format_default(
@@ -243,13 +289,13 @@ def loop_default(
         max_steps=max_steps,
     )
 
-    # Decidir qué imágenes incluir
+    # ── Imágenes: prompt del run actual ───────────────────────────
     images, image_detail = None, None
     prompt_entry = next(
         (e for e in entries
          if e.type == "prompt"
          and isinstance(e.content, dict)
-         and e.content.get("run_id") == rid),
+         and e.content.get("run_id") == current_rid),
         None,
     )
     if prompt_entry and prompt_entry.content.get("images"):
@@ -272,13 +318,20 @@ def loop_default(
 # Helper para registrar la vista en un History
 # ════════════════════════════════════════════════════════════════════
 
-def _build_loop_default_view() -> Callable:
-    """Devuelve una callable que el Loop registra como vista 'loop_default'.
+def _build_loop_default_view(origin: Optional[str] = None) -> Callable:
+    """Devuelve una callable que el Loop registra como vista default.
 
-    Es la versión "out-of-the-box" — usa los defaults (``show_all_runs=False``,
-    ``image_policy="every_turn"``). Si el user quiere otra configuración,
-    registra su propia vista antes de construir el Loop.
+    Cuando ``origin`` está set (caso normal — el Loop lo pasa siempre),
+    la vista resultante filtra por ese origin: concurrent-safe para
+    multi-loop. Sin origin, usa el fallback legacy por run_id.
+
+    Args:
+        origin: ``loop.name`` del Loop que registra la vista. El Loop
+            lo pasa siempre al construirse; solo es None si se llama
+            desde código externo sin loop (uso avanzado).
     """
+    if origin is not None:
+        return lambda h: loop_default(h, origin=origin)
     return loop_default
 
 

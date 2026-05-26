@@ -146,8 +146,17 @@ class InstantLoop:
         self.agent = agent
         self.history = history if history is not None else History()
         self.name = name or f"loop_{uuid.uuid4().hex[:8]}"
-        self.view = view
         self.max_steps = max_steps
+
+        # Transformar "loop_default" al nombre único de este loop.
+        # Cada loop registra su propia vista con origin baked-in, evitando
+        # colisiones en multi-loop concurrente sobre el mismo History.
+        # El user siempre puede pasar view="loop_default" y obtiene el
+        # comportamiento esperado, con nombre interno "loop_default_{name}".
+        if view == "loop_default":
+            self.view = f"loop_default_{self.name}"
+        else:
+            self.view = view
         self.debug = bool(debug)
 
         # Stop signals: whitelist provista + auto del sugar
@@ -197,12 +206,24 @@ class InstantLoop:
     def _ensure_view_available(self) -> None:
         """Garantiza que ``self.view`` existe en el History.
 
-        Doc: loop-design.md líneas 199-220.
+        Para la vista default, el nombre ya fue transformado a
+        ``"loop_default_{self.name}"`` en ``__init__``. Cada loop
+        registra su propia vista con ``origin`` baked-in — sin
+        colisión entre loops que comparten el mismo History.
+
+        Para vistas custom (cualquier nombre que no empiece con
+        ``"loop_default_"``), el user es responsable de registrarlas
+        antes de construir el Loop.
         """
         if self.history.has_view(self.view):
-            return  # ya registrada por user u otro Loop sobre el mismo History
-        if self.view == "loop_default":
-            self.history.add_view("loop_default", _build_loop_default_view())
+            return  # ya registrada (este mismo loop en un run anterior)
+
+        if self.view.startswith("loop_default_"):
+            # Vista default de este loop: registrar con origin baked-in.
+            self.history.add_view(
+                self.view,
+                _build_loop_default_view(origin=self.name),
+            )
         else:
             raise LoopConfigError(
                 f"Vista '{self.view}' no registrada en el History. "

@@ -191,8 +191,8 @@ def test_view_renders_user_prompt_and_response() -> None:
     loop = InstantLoop(agent=Agent(), name="t", max_steps=2)
     # Inspeccionar lo que la vista produciría al inicio del step 2
     loop.run("query inicial")
-    # Después del run, podemos exportar la vista para ver el último estado
-    rendered = loop.history.export("loop_default")
+    # Después del run, exportamos via loop.view (nombre único del loop)
+    rendered = loop.history.export(loop.view)
     assert isinstance(rendered, RenderedPrompt)
     text = rendered.text
     assert "query inicial" in text

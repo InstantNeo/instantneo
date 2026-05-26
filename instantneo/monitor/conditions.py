@@ -52,64 +52,93 @@ def when_type_present(type: str) -> "Condition":
 # Conditions sobre la última entry
 # ════════════════════════════════════════════════════════════════════
 
-def when_last_is_type(type: str) -> "Condition":
+def when_last_is_type(type: str, origin: Optional[str] = None) -> "Condition":
     """True cuando la última entry del History tiene ese ``type``.
 
     Devuelve ``False`` si el History está vacío.
+
+    Args:
+        origin: si está set, considera solo entries con
+            ``content["origin"] == origin`` — correcto en multi-loop.
+            ``None`` (default) evalúa sobre todo el History.
     """
     def cond(history: "History") -> bool:
         entries = history.all()
+        if origin is not None:
+            entries = [e for e in entries
+                       if isinstance(e.content, dict) and e.content.get("origin") == origin]
         if not entries:
             return False
         return entries[-1].type == type
     return cond
 
 
-def when_last_is_author(author: str) -> "Condition":
+def when_last_is_author(author: str, origin: Optional[str] = None) -> "Condition":
     """True cuando la última entry del History es de ese ``author``.
 
     Devuelve ``False`` si el History está vacío.
+
+    Args:
+        origin: si está set, filtra por ``content["origin"]`` antes de
+            evaluar el author — correcto en multi-loop.
     """
     def cond(history: "History") -> bool:
         entries = history.all()
+        if origin is not None:
+            entries = [e for e in entries
+                       if isinstance(e.content, dict) and e.content.get("origin") == origin]
         if not entries:
             return False
         return entries[-1].author == author
     return cond
 
 
-def when_last_content_matches(predicate: Callable[[dict], bool]) -> "Condition":
+def when_last_content_matches(
+    predicate: Callable[[dict], bool],
+    origin: Optional[str] = None,
+) -> "Condition":
     """True cuando el ``content`` de la última entry cumple el ``predicate``.
 
     Devuelve ``False`` si el History está vacío. Si el predicado mismo
     falla, la excepción propaga (es bug del predicado, no del helper).
+
+    Args:
+        origin: si está set, filtra por ``content["origin"]`` antes de
+            evaluar — correcto en multi-loop.
     """
     def cond(history: "History") -> bool:
         entries = history.all()
+        if origin is not None:
+            entries = [e for e in entries
+                       if isinstance(e.content, dict) and e.content.get("origin") == origin]
         if not entries:
             return False
         return bool(predicate(entries[-1].content))
     return cond
 
 
-def when_last_tool_called(name: str) -> "Condition":
+def when_last_tool_called(name: str, origin: Optional[str] = None) -> "Condition":
     """True cuando la última entry ``tool_call`` tiene ``content["name"] == name``.
 
     Útil para el patrón "parar cuando el agente llamó tal tool". Es la
     base del sugar ``stop_tool`` en ``InstantLoop``.
 
-    Devuelve ``False`` si no hay entries ``tool_call`` aún en el History,
-    o si la última tool_call fue una distinta.
+    Devuelve ``False`` si no hay entries ``tool_call`` en el History
+    (o en el origin dado), o si la última fue una tool distinta.
 
     Args:
         name: nombre exacto de la tool (case-sensitive).
+        origin: si está set, considera solo tool_calls con
+            ``content["origin"] == origin`` — correcto en multi-loop.
     """
     def cond(history: "History") -> bool:
         tool_calls = history.by_type("tool_call")
+        if origin is not None:
+            tool_calls = [t for t in tool_calls
+                          if isinstance(t.content, dict) and t.content.get("origin") == origin]
         if not tool_calls:
             return False
-        last = tool_calls[-1]
-        return last.content.get("name") == name
+        return tool_calls[-1].content.get("name") == name
     return cond
 
 
@@ -153,9 +182,16 @@ def when_tokens_above(
 # Si no usás un Loop con esa convención, estas conditions devuelven False.
 # ════════════════════════════════════════════════════════════════════
 
-def _last_step_num(history: "History") -> Optional[int]:
-    """Devuelve el step_num de la última entry tipo step_start, o None."""
+def _last_step_num(history: "History", origin: Optional[str] = None) -> Optional[int]:
+    """Devuelve el step_num de la última entry tipo step_start, o None.
+
+    Args:
+        origin: si está set, considera solo step_starts de ese origin.
+    """
     entries = history.by_type("step_start")
+    if origin is not None:
+        entries = [e for e in entries
+                   if isinstance(e.content, dict) and e.content.get("origin") == origin]
     if not entries:
         return None
     last = entries[-1]
@@ -165,7 +201,7 @@ def _last_step_num(history: "History") -> Optional[int]:
     return step_num
 
 
-def every_n_steps(n: int) -> "Condition":
+def every_n_steps(n: int, origin: Optional[str] = None) -> "Condition":
     """True cuando el último ``step_num`` es múltiplo de ``n``.
 
     Requiere que el Loop appendea entries ``type="step_start"`` con
@@ -175,23 +211,31 @@ def every_n_steps(n: int) -> "Condition":
     ``step_num = 0`` se considera múltiplo de cualquier ``n`` (False
     matemáticamente para algunos n; aquí devolvemos False también para
     evitar confusión: la "primera pasada" no debería disparar la rule).
+
+    Args:
+        origin: si está set, considera solo step_starts de ese origin —
+            correcto en multi-loop. ``None`` (default) evalúa sobre
+            todos los step_starts del History.
     """
     def cond(history: "History") -> bool:
-        step_num = _last_step_num(history)
+        step_num = _last_step_num(history, origin=origin)
         if step_num is None or step_num <= 0:
             return False
         return step_num % n == 0
     return cond
 
 
-def at_step(k: int) -> "Condition":
+def at_step(k: int, origin: Optional[str] = None) -> "Condition":
     """True cuando el último ``step_num`` es exactamente ``k``.
 
     Misma convención que ``every_n_steps``: depende de que el Loop
     emita entries de tipo ``step_start`` con ``content["step_num"]``.
+
+    Args:
+        origin: si está set, considera solo step_starts de ese origin.
     """
     def cond(history: "History") -> bool:
-        return _last_step_num(history) == k
+        return _last_step_num(history, origin=origin) == k
     return cond
 
 
