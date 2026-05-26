@@ -147,19 +147,28 @@ def test_construct_view_unknown_raises() -> None:
 
 
 def test_construct_auto_registers_loop_default_view() -> None:
+    """El Loop registra una vista con nombre único (loop_default_{name}),
+    no el genérico "loop_default" — evita colisiones en multi-loop."""
     h = History()
+    loop = InstantLoop(agent=_mk_mock_agent(), history=h)
+    # La vista registrada es la del loop específico, no la genérica.
+    assert h.has_view(loop.view)
+    assert loop.view.startswith("loop_default_")
+    # El nombre genérico "loop_default" no se registra en el History.
     assert not h.has_view("loop_default")
-    InstantLoop(agent=_mk_mock_agent(), history=h)
-    assert h.has_view("loop_default")
 
 
 def test_construct_does_not_overwrite_existing_view() -> None:
-    """Si el History ya tiene 'loop_default', el Loop NO la pisa."""
+    """Si el History tiene una vista custom 'loop_default', el Loop NO la pisa.
+
+    El Loop registra su propia vista bajo 'loop_default_{name}' — nombre
+    distinto — así que la custom del usuario queda intacta.
+    """
     h = History()
     sentinel = lambda hist: "CUSTOM"
     h.add_view("loop_default", sentinel)
     InstantLoop(agent=_mk_mock_agent(), history=h)
-    # La vista sigue siendo la custom
+    # La vista custom sigue siendo la del usuario
     assert h.export("loop_default") == "CUSTOM"
 
 
