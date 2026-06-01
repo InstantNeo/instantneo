@@ -71,6 +71,12 @@ def test_direct_fetchers() -> None:
     from instantneo.fetchers.anthropic import AnthropicClient, fetch_anthropic  # noqa: F401
     from instantneo.fetchers.gemini import GeminiClient, fetch_gemini  # noqa: F401
     from instantneo.fetchers.groq import GroqClient, fetch_groq  # noqa: F401
+    from instantneo.fetchers.deepseek import DeepSeekClient, fetch_deepseek  # noqa: F401
+    from instantneo.fetchers.mistral import MistralClient, fetch_mistral  # noqa: F401
+    from instantneo.fetchers.qwen import QwenClient, fetch_qwen  # noqa: F401
+    from instantneo.fetchers.kimi import KimiClient, fetch_kimi  # noqa: F401
+    from instantneo.fetchers.zhipu import ZhipuClient, fetch_zhipu  # noqa: F401
+    from instantneo.fetchers.mimo import MiMoClient, fetch_mimo  # noqa: F401
     from instantneo.fetchers.openai import OpenAIClient, fetch_openai  # noqa: F401
     from instantneo.fetchers.cerebras import CerebrasClient, fetch_cerebras  # noqa: F401
     from instantneo.fetchers.xai import XAIClient, fetch_xai  # noqa: F401
@@ -97,6 +103,12 @@ def test_direct_adapters() -> None:
     from instantneo.adapters.anthropic_adapter import AnthropicAdapter  # noqa: F401
     from instantneo.adapters.gemini_adapter import GeminiAdapter  # noqa: F401
     from instantneo.adapters.groq_adapter import GroqAdapter  # noqa: F401
+    from instantneo.adapters.deepseek_adapter import DeepSeekAdapter  # noqa: F401
+    from instantneo.adapters.mistral_adapter import MistralAdapter  # noqa: F401
+    from instantneo.adapters.qwen_adapter import QwenAdapter  # noqa: F401
+    from instantneo.adapters.kimi_adapter import KimiAdapter  # noqa: F401
+    from instantneo.adapters.zhipu_adapter import ZhipuAdapter  # noqa: F401
+    from instantneo.adapters.mimo_adapter import MiMoAdapter  # noqa: F401
     from instantneo.adapters.openai_adapter import OpenAIAdapter  # noqa: F401
     from instantneo.adapters.cerebras_adapter import CerebrasAdapter  # noqa: F401
     from instantneo.adapters.xai_adapter import XAIAdapter  # noqa: F401
@@ -114,6 +126,8 @@ def test_adapters_namespace() -> None:
     import instantneo.adapters as a
     for name in (
         "BaseAdapter", "AnthropicAdapter", "OpenAIAdapter", "GroqAdapter",
+        "DeepSeekAdapter", "MistralAdapter", "QwenAdapter", "KimiAdapter", "ZhipuAdapter",
+        "MiMoAdapter",
         "CerebrasAdapter", "VertexAnthropicAdapter", "VertexGeminiAdapter",
         "XAIAdapter", "VertexXAIAdapter",
     ):
@@ -152,6 +166,7 @@ def test_core_adapter_map_is_resolvable() -> None:
     # No es elegante, pero es estable y no requiere construir un InstantNeo.
     expected_providers = (
         "openai", "anthropic", "groq", "cerebras",
+        "deepseek", "mistral", "qwen", "kimi", "moonshot", "zhipu", "glm", "mimo", "xiaomi_mimo",
         "gemini", "vertexai", "vertex_anthropic", "xai", "vertex_xai",
     )
     for provider in expected_providers:
