@@ -98,7 +98,7 @@ class OpenAIAdapter(BaseAdapter):
             return self._translate_response(response)
 
         except Exception as e:
-            raise RuntimeError(f"Error en OpenAI API: {str(e)}")
+            raise RuntimeError(f"Error en OpenAI API: {e}") from e
 
     def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
         """
@@ -146,7 +146,7 @@ class OpenAIAdapter(BaseAdapter):
                     yield translated
 
         except Exception as e:
-            raise RuntimeError(f"Error en OpenAI API streaming: {str(e)}")
+            raise RuntimeError(f"Error en OpenAI API streaming: {e}") from e
 
     def supports_images(self) -> bool:
         """OpenAI soporta imágenes con GPT-4 Vision y modelos posteriores."""

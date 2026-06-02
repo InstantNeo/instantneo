@@ -369,7 +369,7 @@ class CerebrasClient:
                 try:
                     error_data = response.json()
                     error_msg = error_data.get('error', {}).get('message', 'Unknown error')
-                except:
+                except Exception:
                     error_msg = f"HTTP {response.status_code}: {response.text}"
 
                 raise httpx.HTTPStatusError(

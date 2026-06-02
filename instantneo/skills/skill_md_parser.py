@@ -53,7 +53,7 @@ class SkillMdParser:
         try:
             frontmatter = yaml.safe_load(frontmatter_str)
         except yaml.YAMLError as e:
-            raise ValueError(f"Error parseando frontmatter YAML: {e}")
+            raise ValueError(f"Error parseando frontmatter YAML: {e}") from e
 
         if not frontmatter:
             frontmatter = {}

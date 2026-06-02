@@ -157,8 +157,14 @@ def _make_mock_httpx_response(content: bytes, content_type: str) -> MagicMock:
     response = MagicMock()
     response.content = content
     response.headers = {"content-type": content_type}
+    response.is_redirect = False
     response.raise_for_status = MagicMock(return_value=None)
     return response
+
+
+def _fake_public_getaddrinfo(*_args, **_kwargs):
+    """Resuelve cualquier host a una IP pública fija (evita DNS real)."""
+    return [(2, 1, 6, "", ("93.184.216.34", 443))]
 
 
 def test_process_images_url_includes_detail() -> None:
@@ -171,7 +177,8 @@ def test_process_images_url_includes_detail() -> None:
     mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
     mock_client_instance.__exit__ = MagicMock(return_value=False)
 
-    with patch("instantneo.utils.image_utils.httpx.Client", return_value=mock_client_instance):
+    with patch("instantneo.utils.image_utils.httpx.Client", return_value=mock_client_instance), \
+         patch("instantneo.utils.image_utils.socket.getaddrinfo", _fake_public_getaddrinfo):
         result = process_images("https://example.com/test.png", "high")
 
     assert len(result) == 1
@@ -190,7 +197,8 @@ def test_process_images_url_preserves_base64_payload() -> None:
     mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
     mock_client_instance.__exit__ = MagicMock(return_value=False)
 
-    with patch("instantneo.utils.image_utils.httpx.Client", return_value=mock_client_instance):
+    with patch("instantneo.utils.image_utils.httpx.Client", return_value=mock_client_instance), \
+         patch("instantneo.utils.image_utils.socket.getaddrinfo", _fake_public_getaddrinfo):
         result = process_images("https://example.com/test.png", "auto")
 
     url = result[0]["image_url"]["url"]
@@ -198,6 +206,75 @@ def test_process_images_url_preserves_base64_payload() -> None:
     assert url.startswith(prefix)
     decoded = base64.b64decode(url[len(prefix):])
     assert decoded == _TINY_PNG_BYTES
+
+
+# ─── Tests anti-SSRF ───────────────────────────────────────────────────
+
+from instantneo.utils.image_utils import download_image_to_base64
+
+
+def _expect_value_error(fn) -> None:
+    """Asegura que fn() lanza ValueError (sin depender de pytest)."""
+    try:
+        fn()
+    except ValueError:
+        return
+    raise AssertionError("Se esperaba ValueError pero no se lanzó")
+
+
+def test_blocks_private_ip() -> None:
+    """Una URL que resuelve a un rango privado (10/8) es rechazada."""
+    _expect_value_error(lambda: download_image_to_base64("http://10.0.0.1/x.png"))
+
+
+def test_blocks_loopback() -> None:
+    """Loopback (127.0.0.1) es rechazado."""
+    _expect_value_error(lambda: download_image_to_base64("http://127.0.0.1/x.png"))
+
+
+def test_blocks_cloud_metadata_endpoint() -> None:
+    """El endpoint link-local de metadata de cloud (169.254.169.254) es rechazado."""
+    _expect_value_error(lambda: download_image_to_base64("http://169.254.169.254/latest/meta-data/"))
+
+
+def test_blocks_non_http_scheme() -> None:
+    """Esquemas distintos de http/https (file://, gopher://) son rechazados."""
+    _expect_value_error(lambda: download_image_to_base64("file:///etc/passwd"))
+
+
+def test_allowed_hosts_bypass_permits_internal() -> None:
+    """Un host interno listado en allowed_hosts se permite explícitamente."""
+    fake_response = _make_mock_httpx_response(_TINY_PNG_BYTES, "image/png")
+    mock_client = MagicMock()
+    mock_client.get.return_value = fake_response
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+
+    with patch("instantneo.utils.image_utils.httpx.Client", return_value=mock_client):
+        data, media_type = download_image_to_base64(
+            "http://10.0.0.5/internal.png", allowed_hosts={"10.0.0.5"}
+        )
+
+    assert media_type == "image/png"
+    assert base64.b64decode(data) == _TINY_PNG_BYTES
+
+
+def test_redirect_to_internal_is_blocked() -> None:
+    """Un 3xx que apunta a una IP interna se revalida y se bloquea
+    (los redirects no se siguen automáticamente)."""
+    redirect_resp = MagicMock()
+    redirect_resp.is_redirect = True
+    redirect_resp.headers = {"location": "http://169.254.169.254/"}
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = redirect_resp
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+
+    # Empezamos en una IP pública literal (sin DNS); el redirect apunta a
+    # link-local, que la segunda validación debe rechazar.
+    with patch("instantneo.utils.image_utils.httpx.Client", return_value=mock_client):
+        _expect_value_error(lambda: download_image_to_base64("http://93.184.216.34/test.png"))
 
 
 # ─── Runner standalone (sin pytest) ────────────────────────────────────
@@ -213,6 +290,12 @@ if __name__ == "__main__":
         ("process_images_jpeg_mime_detection",         test_process_images_jpeg_mime_detection),
         ("process_images_url_includes_detail",         test_process_images_url_includes_detail),
         ("process_images_url_preserves_base64_payload", test_process_images_url_preserves_base64_payload),
+        ("blocks_private_ip",                          test_blocks_private_ip),
+        ("blocks_loopback",                            test_blocks_loopback),
+        ("blocks_cloud_metadata_endpoint",             test_blocks_cloud_metadata_endpoint),
+        ("blocks_non_http_scheme",                     test_blocks_non_http_scheme),
+        ("allowed_hosts_bypass_permits_internal",      test_allowed_hosts_bypass_permits_internal),
+        ("redirect_to_internal_is_blocked",            test_redirect_to_internal_is_blocked),
     ]
     failures = []
     for name, fn in tests:
