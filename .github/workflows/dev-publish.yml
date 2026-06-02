@@ -1,0 +1,89 @@
+name: Publish dev build to PyPI
+
+# Se ejecuta en cada push a desarrollo que toque código fuente.
+# Publica una versión X.Y.(Z+1).devN donde N = total de commits en el repo.
+# El auto-incremento del patch garantiza que la dev sea siempre más nueva
+# que la última versión estable en PyPI.
+#
+# Instalación:
+#   pip install --pre instantneo          # última dev disponible
+#   pip install --pre --upgrade instantneo # actualizar a la más reciente
+
+on:
+  push:
+    branches: [desarrollo]
+    paths:
+      - 'instantneo/**'
+      - 'pyproject.toml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev,vertexai]"
+
+      - name: Run test suite
+        run: python -m pytest tests/ -v
+
+  dev-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # historial completo para contar commits
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate dev version
+        run: |
+          python3 << 'EOF'
+          import tomllib, subprocess, os
+
+          with open("pyproject.toml", "rb") as f:
+              version = tomllib.load(f)["project"]["version"]
+
+          # Incrementa el patch para que la dev siempre sea > al stable:
+          # pyproject.toml: 0.3.0  →  dev build: 0.3.1.devN
+          major, minor, patch = version.split(".")
+          base = f"{major}.{minor}.{int(patch) + 1}"
+
+          count = subprocess.check_output(
+              ["git", "rev-list", "--count", "HEAD"]
+          ).decode().strip()
+
+          dev_version = f"{base}.dev{count}"
+          print(f"Stable version : {version}")
+          print(f"Dev version    : {dev_version}")
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"DEV_VERSION={dev_version}\n")
+          EOF
+
+      - name: Set dev version in pyproject.toml
+        run: sed -i "s/^version = .*/version = \"$DEV_VERSION\"/" pyproject.toml
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload --skip-existing dist/*
