@@ -1,13 +1,15 @@
 name: Publish dev build to PyPI
 
-# Se ejecuta en cada push a desarrollo que toque código fuente.
-# Publica una versión X.Y.(Z+1).devN donde N = total de commits en el repo.
-# El auto-incremento del patch garantiza que la dev sea siempre más nueva
-# que la última versión estable en PyPI.
+# Se ejecuta en cada push a desarrollo que toque código fuente,
+# o manualmente desde la UI de GitHub Actions.
+#
+# Publica una versión {version}.devN donde:
+#   - version = lo que dice pyproject.toml (la próxima versión planificada)
+#   - N       = total de commits en el repo (se autoincrementa solo)
 #
 # Instalación:
-#   pip install --pre instantneo          # última dev disponible
-#   pip install --pre --upgrade instantneo # actualizar a la más reciente
+#   pip install --pre instantneo           # última dev disponible
+#   pip install --pre --upgrade instantneo  # actualizar a la más reciente
 
 on:
   push:
@@ -15,6 +17,7 @@ on:
     paths:
       - 'instantneo/**'
       - 'pyproject.toml'
+  workflow_dispatch:  # permite ejecución manual desde la UI de GitHub Actions
 
 jobs:
   test:
@@ -56,18 +59,15 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               version = tomllib.load(f)["project"]["version"]
 
-          # Incrementa el patch para que la dev siempre sea > al stable:
-          # pyproject.toml: 0.3.0  →  dev build: 0.3.1.devN
-          major, minor, patch = version.split(".")
-          base = f"{major}.{minor}.{int(patch) + 1}"
-
+          # La versión en pyproject.toml ya es la próxima (ej: 0.3.1).
+          # El sufijo devN se autoincrementa con cada commit.
           count = subprocess.check_output(
               ["git", "rev-list", "--count", "HEAD"]
           ).decode().strip()
 
-          dev_version = f"{base}.dev{count}"
-          print(f"Stable version : {version}")
-          print(f"Dev version    : {dev_version}")
+          dev_version = f"{version}.dev{count}"
+          print(f"Next version : {version}")
+          print(f"Dev version  : {dev_version}")
 
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write(f"DEV_VERSION={dev_version}\n")
