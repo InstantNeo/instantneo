@@ -14,6 +14,12 @@ Uso:
     python validate.py --provider anthropic --model claude-haiku-4-5-20251001
     python validate.py --provider cerebras --model llama-3.3-70b
     python validate.py --provider xai --model grok-3-mini
+    python validate.py --provider deepseek --model deepseek-chat
+    python validate.py --provider mistral --model mistral-small-latest
+    python validate.py --provider qwen --model qwen-plus
+    python validate.py --provider kimi --model kimi-k2.6
+    python validate.py --provider zhipu --model glm-4.5-flash
+    python validate.py --provider mimo --model mimo-v2.5-pro
 
     # Sobrescribir modelo/key sin tocar el provider detectado
     python validate.py --model openai/gpt-oss-20b
@@ -21,7 +27,11 @@ Uso:
 
 Variables de entorno reconocidas para auto-deteccion:
     GROQ_API_KEY, OPEN_AI_API_KEY, OPENAI_API_KEY,
-    ANTHROPIC_API_KEY, CEREBRAS_API_KEY, XAI_API_KEY
+    ANTHROPIC_API_KEY, CEREBRAS_API_KEY, XAI_API_KEY,
+    DEEPSEEK_API_KEY, MISTRAL_API_KEY, QWEN_API_KEY, DASHSCOPE_API_KEY,
+    KIMI_API_KEY, MOONSHOT_API_KEY,
+    ZHIPU_API_KEY, ZAI_API_KEY, GLM_API_KEY,
+    MIMO_API_KEY, XIAOMI_MIMO_API_KEY
 
 Variables para configuracion explicita:
     INSTANTNEO_PROVIDER, INSTANTNEO_MODEL, INSTANTNEO_API_KEY
@@ -53,7 +63,17 @@ try:
     from dotenv import load_dotenv
     load_dotenv(_REPO_ROOT / ".env", override=True)
 except ImportError:
-    pass
+    env_path = _REPO_ROOT / ".env"
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 # ── Configuracion de providers ────────────────────────────────────────────────
 
@@ -65,6 +85,24 @@ _PROVIDERS = [
     ("anthropic", "ANTHROPIC_API_KEY", "claude-haiku-4-5-20251001"),
     ("cerebras",  "CEREBRAS_API_KEY",  "llama-3.3-70b"),
     ("xai",       "XAI_API_KEY",       "grok-3-mini"),
+    ("deepseek",  "DEEPSEEK_API_KEY",  "deepseek-chat"),
+    ("mistral",   "MISTRAL_API_KEY",   "mistral-small-latest"),
+    ("qwen",      "QWEN_API_KEY",      "qwen-plus"),
+    ("qwen",      "DASHSCOPE_API_KEY", "qwen-plus"),
+    ("kimi",      "KIMI_API_KEY",      "kimi-k2.6"),
+    ("kimi",      "MOONSHOT_API_KEY",  "kimi-k2.6"),
+    ("moonshot",  "KIMI_API_KEY",      "kimi-k2.6"),
+    ("moonshot",  "MOONSHOT_API_KEY",  "kimi-k2.6"),
+    ("zhipu",     "ZHIPU_API_KEY",     "glm-4.5-flash"),
+    ("zhipu",     "ZAI_API_KEY",       "glm-4.5-flash"),
+    ("zhipu",     "GLM_API_KEY",       "glm-4.5-flash"),
+    ("glm",       "ZHIPU_API_KEY",     "glm-4.5-flash"),
+    ("glm",       "ZAI_API_KEY",       "glm-4.5-flash"),
+    ("glm",       "GLM_API_KEY",       "glm-4.5-flash"),
+    ("mimo",      "MIMO_API_KEY",      "mimo-v2.5-pro"),
+    ("mimo",      "XIAOMI_MIMO_API_KEY", "mimo-v2.5-pro"),
+    ("xiaomi_mimo", "MIMO_API_KEY",    "mimo-v2.5-pro"),
+    ("xiaomi_mimo", "XIAOMI_MIMO_API_KEY", "mimo-v2.5-pro"),
 ]
 
 _DEFAULT_MODEL = {
@@ -73,7 +111,19 @@ _DEFAULT_MODEL = {
     "anthropic": "claude-haiku-4-5-20251001",
     "cerebras":  "llama-3.3-70b",
     "xai":       "grok-3-mini",
+    "deepseek":  "deepseek-chat",
+    "mistral":   "mistral-small-latest",
+    "qwen":      "qwen-plus",
+    "kimi":      "kimi-k2.6",
+    "moonshot":  "kimi-k2.6",
+    "zhipu":     "glm-4.5-flash",
+    "glm":       "glm-4.5-flash",
+    "mimo":      "mimo-v2.5-pro",
+    "xiaomi_mimo": "mimo-v2.5-pro",
 }
+
+_KNOWN_KEY_ENV_VARS = sorted({env_var for _, env_var, _ in _PROVIDERS})
+_KNOWN_PROVIDERS = sorted(_DEFAULT_MODEL.keys())
 
 
 def _autodetect() -> tuple[str, str, str]:
@@ -85,13 +135,32 @@ def _autodetect() -> tuple[str, str, str]:
     return "", "", ""
 
 
+def _key_for_provider(provider: str) -> tuple[str, str]:
+    """Devuelve (model_default, api_key) para un provider explicito."""
+    provider = provider.lower()
+    for item_provider, env_var, default_model in _PROVIDERS:
+        if item_provider != provider:
+            continue
+        key = os.environ.get(env_var, "")
+        if key:
+            return default_model, key
+    return _DEFAULT_MODEL.get(provider, ""), ""
+
+
 def _resolve_config(args) -> tuple[str, str, str]:
     """Combina CLI args + env vars + autodeteccion. Aborta si faltan datos."""
     provider = args.provider or os.environ.get("INSTANTNEO_PROVIDER", "")
     model    = args.model    or os.environ.get("INSTANTNEO_MODEL", "")
     api_key  = args.api_key  or os.environ.get("INSTANTNEO_API_KEY", "")
 
-    if not provider or not api_key:
+    provider = provider.lower()
+
+    if provider and not api_key:
+        provider_default_model, provider_key = _key_for_provider(provider)
+        model = model or provider_default_model
+        api_key = provider_key
+
+    if not provider and not api_key:
         auto_provider, auto_model, auto_key = _autodetect()
         provider = provider or auto_provider
         model    = model    or auto_model
@@ -100,8 +169,8 @@ def _resolve_config(args) -> tuple[str, str, str]:
     if not provider or not api_key:
         print(
             "ERROR: no se encontro provider ni API key.\n"
-            "Exporta una de: GROQ_API_KEY, OPEN_AI_API_KEY, OPENAI_API_KEY,\n"
-            "                ANTHROPIC_API_KEY, CEREBRAS_API_KEY, XAI_API_KEY\n"
+            "Exporta una de:\n"
+            f"                {', '.join(_KNOWN_KEY_ENV_VARS)}\n"
             "o usa --provider y --api-key."
         )
         sys.exit(1)
@@ -118,7 +187,11 @@ def _resolve_config(args) -> tuple[str, str, str]:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 parser = argparse.ArgumentParser(description="Validacion funcional de InstantNeo")
-parser.add_argument("--provider", default="", help="Provider (groq, openai, anthropic, cerebras, xai)")
+parser.add_argument(
+    "--provider",
+    default="",
+    help=f"Provider ({', '.join(_KNOWN_PROVIDERS)})",
+)
 parser.add_argument("--model",    default="", help="Nombre del modelo a usar")
 parser.add_argument("--api-key",  default="", dest="api_key", help="API key del provider")
 args = parser.parse_args()
@@ -134,6 +207,17 @@ from instantneo import (
 )
 from instantneo.monitor.conditions import when_last_tool_called
 from instantneo.monitor.actions import stop_signal
+
+class RequiredToolLoop(InstantLoop):
+    """Loop de validacion que fuerza tool-calling en cada step."""
+
+    def _invoke_agent(self, text: str, images, image_detail) -> None:
+        self.agent.run(
+            text,
+            images=images,
+            image_detail=image_detail,
+            tool_choice="required",
+        )
 
 # ── Helpers de reporte ────────────────────────────────────────────────────────
 
@@ -237,7 +321,7 @@ try:
         max_tokens=512,
     )
 
-    loop = InstantLoop(
+    loop = RequiredToolLoop(
         agent=agent_loop,
         name="val_loop",
         stop_tool="reportar_maximo",
@@ -354,7 +438,7 @@ try:
         stop_signal("agente llamo a pensar"),
     )
 
-    loop_mon = InstantLoop(
+    loop_mon = RequiredToolLoop(
         agent=agent_mon,
         name="val_monitor",
         history=history_mon,
@@ -428,7 +512,7 @@ try:
         max_tokens=1024,
     )
 
-    loop_caps = InstantLoop(
+    loop_caps = RequiredToolLoop(
         agent=agent_caps,
         name="val_caps",
         stop_tool="entregar",

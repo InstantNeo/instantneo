@@ -180,7 +180,7 @@ class ChatCompletionsClient:
                 tool_calls = [
                     ToolCall(
                         id=tc["id"],
-                        type=tc["type"],
+                        type=tc.get("type", "function"),
                         function=FunctionCall(
                             name=tc["function"]["name"],
                             arguments=tc["function"]["arguments"],
