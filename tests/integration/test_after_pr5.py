@@ -230,7 +230,8 @@ def test_multi_turn_history_via_repeated_bridge_calls() -> None:
 def test_bridge_with_image_in_arguments_preserves_dict() -> None:
     """Tool con argumento complejo (incluye dict de imagen del PR 1)
     queda preservado intacto a través del bridge."""
-    path = tempfile.mkstemp(suffix=".png")[1]
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
     with open(path, "wb") as f:
         f.write(_TINY_PNG_BYTES)
     try:
