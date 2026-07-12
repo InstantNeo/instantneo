@@ -53,3 +53,9 @@ try:
     __all__.append('VertexXAIAdapter')
 except ImportError:
     VertexXAIAdapter = None
+
+try:
+    from .fireworks_adapter import FireworksAdapter
+    __all__.append('FireworksAdapter')
+except ImportError:
+    FireworksAdapter = None

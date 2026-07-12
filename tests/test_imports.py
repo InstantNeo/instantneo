@@ -74,6 +74,7 @@ def test_direct_fetchers() -> None:
     from instantneo.fetchers.openai import OpenAIClient, fetch_openai  # noqa: F401
     from instantneo.fetchers.cerebras import CerebrasClient, fetch_cerebras  # noqa: F401
     from instantneo.fetchers.xai import XAIClient, fetch_xai  # noqa: F401
+    from instantneo.fetchers.fireworks import FireworksClient, fetch_fireworks  # noqa: F401
 
 
 def test_vertex_fetchers() -> None:
@@ -100,6 +101,7 @@ def test_direct_adapters() -> None:
     from instantneo.adapters.openai_adapter import OpenAIAdapter  # noqa: F401
     from instantneo.adapters.cerebras_adapter import CerebrasAdapter  # noqa: F401
     from instantneo.adapters.xai_adapter import XAIAdapter  # noqa: F401
+    from instantneo.adapters.fireworks_adapter import FireworksAdapter  # noqa: F401
 
 
 def test_vertex_adapters() -> None:
@@ -115,7 +117,7 @@ def test_adapters_namespace() -> None:
     for name in (
         "BaseAdapter", "AnthropicAdapter", "OpenAIAdapter", "GroqAdapter",
         "CerebrasAdapter", "VertexAnthropicAdapter", "VertexGeminiAdapter",
-        "XAIAdapter", "VertexXAIAdapter",
+        "XAIAdapter", "VertexXAIAdapter", "FireworksAdapter",
     ):
         assert getattr(a, name, None) is not None, f"adapters.{name} no expuesto"
 
@@ -153,6 +155,7 @@ def test_core_adapter_map_is_resolvable() -> None:
     expected_providers = (
         "openai", "anthropic", "groq", "cerebras",
         "gemini", "vertexai", "vertex_anthropic", "xai", "vertex_xai",
+        "fireworks",
     )
     for provider in expected_providers:
         assert f'"{provider}"' in src, f"core.adapter_map missing provider {provider!r}"

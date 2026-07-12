@@ -171,10 +171,15 @@ class InstantNeo:
             - "openai": OpenAI's models.
             - "anthropic": Anthropic's models.
             - "groq": Groq's models.
+            - "cerebras": Cerebras' models.
+            - "xai": xAI's Grok models.
+            - "fireworks": Fireworks AI's models.
             - "gemini": Google Gemini API (requires api_key).
             - "vertexai": Google Vertex AI (requires service_account_file and location).
+            - "vertex_anthropic": Anthropic models on Vertex AI.
+            - "vertex_xai": xAI Grok models on Vertex AI.
         api_key (str): API key for accessing the specified provider.
-            Required for: openai, anthropic, groq, gemini.
+            Required for: openai, anthropic, groq, cerebras, xai, fireworks, gemini.
         model (str): The name of the language model to use.
         role_setup (str): Initial role setup or system prompt for the agent.
         skills (Optional[Union[List[str], SkillManager]], optional): Skills to be registered
@@ -1335,6 +1340,7 @@ Args:
             "vertex_anthropic": ("instantneo.adapters.vertex_anthropic_adapter", "VertexAnthropicAdapter"),
             "xai": ("instantneo.adapters.xai_adapter", "XAIAdapter"),
             "vertex_xai": ("instantneo.adapters.vertex_xai_adapter", "VertexXAIAdapter"),
+            "fireworks": ("instantneo.adapters.fireworks_adapter", "FireworksAdapter"),
         }
 
         if self.config.provider not in adapter_map:
@@ -1355,7 +1361,7 @@ Args:
                 service_account_file=self.config.service_account_file,
             )
         else:
-            # openai, anthropic, groq, gemini - todos usan api_key
+            # openai, anthropic, groq, cerebras, gemini, xai, fireworks - todos usan api_key
             if not self.config.api_key:
                 raise ValueError(f"api_key is required for {self.config.provider} provider")
             return adapter_class(api_key=self.config.api_key)

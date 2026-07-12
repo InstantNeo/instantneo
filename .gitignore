@@ -68,6 +68,10 @@ pyproject.toml
 # Test temp
 .test-temp/
 
+# Misceláneos de desarrollo local (docs de trabajo, notas, borradores).
+# Nunca se commitea; ver misc/README.md local.
+misc/
+
 # Excluir TODO archivo/carpeta que empiece con "." (sandbox local, credenciales, etc.)
 # Whitelist explícita debajo para los dotfiles que sí van al repo.
 .*
