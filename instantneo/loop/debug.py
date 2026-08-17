@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from instantneo.debug import TurnLog, write_json, build_agent_config
+from instantneo.debug import TurnLog, write_json, build_agent_config, secure_mkdir
 
 if TYPE_CHECKING:
     from instantneo.history import History
@@ -163,7 +163,7 @@ class RunLog:
         original = self.output_path
         try:
             self.output_path = target
-            target.mkdir(parents=True, exist_ok=True)
+            secure_mkdir(target)
             self.write_config()
             for i, t in enumerate(self.turns, start=1):
                 write_json(target / f"turn_{i:03d}.json", t.to_dict())
@@ -305,7 +305,7 @@ def _new_run_log_for_loop(
         log.output_path = _compute_run_folder(
             base_path, loop_name, started_at_iso, sequence_num, run_id,
         )
-        log.output_path.mkdir(parents=True, exist_ok=True)
+        secure_mkdir(log.output_path)
     return log
 
 

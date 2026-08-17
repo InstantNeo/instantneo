@@ -3,6 +3,15 @@
 Fecha: 2026-08-17 · Alcance: `instantneo/` (11.410 LOC), CI, empaquetado
 Estado del repo analizado: `010cd62` (InstantLoop v2)
 
+> **Estado de remediación.** El bloque «Ahora» del plan (§5) está implementado:
+> **A1, S1, S5, S6 y A6.2** están corregidos y cubiertos por 28 tests de
+> regresión nuevos (suite: 420 → 448, todos en verde). Cada hallazgo corregido
+> lleva la marca **✅ Corregido** con el commit correspondiente.
+>
+> **S2, S3, S4 y A2** siguen abiertos — son el bloque «Siguiente», y su
+> corrección es trabajo de diseño, no de parche. Verificado explícitamente que
+> los PoC de S2 y S3 aún reproducen.
+
 ---
 
 ## 0. Resumen ejecutivo
@@ -45,7 +54,7 @@ Los tres hallazgos de mayor impacto están **confirmados con PoC ejecutable**:
 
 ## 1. Seguridad
 
-### S1 — `run(tools=[...])` no restringe qué se ejecuta · **Alto**
+### S1 — `run(tools=[...])` no restringe qué se ejecuta · **Alto** · ✅ Corregido
 
 `instantneo/core.py:639` calcula `active_tools`, pero ese conjunto se usa
 **solamente** para construir los schemas que se le mandan al provider
@@ -87,6 +96,29 @@ turno) no existe.
 llega un nombre fuera de scope: no ejecutar, registrar la entry de violación y
 devolver un error al modelo como resultado de la tool (para que pueda corregir),
 en lugar de un `logger.warning` silencioso.
+
+**✅ Implementado.** `active_tools` se propaga por las cuatro rutas de ejecución
+(normal + las tres ramas de streaming). `_execute_tool` pasó a ser el punto único
+de resolución y de aplicación del scope: antes la tool se resolvía dos veces por
+caminos independientes, que es exactamente por qué el chequeo se había
+desalineado — `ruff` lo marcaba como `F841` en `core.py:861`, y ese hallazgo
+desapareció con el fix.
+
+Dos decisiones de diseño que vale registrar:
+
+- **El gate falla cerrado.** `active_tools` es keyword-only y **obligatorio**,
+  sin default permisivo. Un `None → registro completo` habría sido cómodo para
+  compatibilidad, pero reproduce el bug original: un call site futuro que olvide
+  el parámetro desactivaría el gate en silencio. Ejecutar contra todo el registro
+  ahora hay que pedirlo explícitamente.
+- **La violación se registra como `ToolExecution` con `exception`**, no como un
+  warning suelto, así queda visible en `RunInfo` → History → RunLog.
+
+La rama streaming de `EXECUTION_ONLY` no validaba el scope **en absoluto** — ni
+contra el registro completo — y además tenía un `UnboundLocalError` latente:
+si `_execute_tool` fallaba, `result` quedaba sin asignar y el
+`futures.append(result)` siguiente tomaba el valor de la iteración anterior.
+Ambas cosas quedaron cubiertas.
 
 ---
 
@@ -130,6 +162,15 @@ schema que ya existe: coerción de tipos, `required` verificado, claves
 desconocidas rechazadas, `enum` respetado. El error debe volver al modelo como
 resultado de tool (permitiendo autocorrección), no propagarse como excepción.
 Envolver `json.loads` en try/except con el mismo tratamiento.
+
+**Parcialmente implementado.** El `json.loads` ya está envuelto en las cuatro
+rutas: un JSON truncado o malformado del provider ahora se registra como
+`ToolExecution` fallida y se omite esa llamada, en vez de abortar el run (y con
+él, en un Loop, todos los steps ya pagados).
+
+**El núcleo de S2 sigue abierto:** no hay coerción de tipos ni rechazo de kwargs
+desconocidos. Verificado tras el fix — `transfer({"amount": "999999999"})` sigue
+entregando un `str` a una tool anotada `int`.
 
 ---
 
@@ -209,7 +250,7 @@ extensión de URL.
 
 ---
 
-### S5 — Interpolación sin validar en endpoints de Vertex · **Medio**
+### S5 — Interpolación sin validar en endpoints de Vertex · **Medio** · ✅ Corregido
 
 `fetchers/vertex/_auth.py:228-245`:
 
@@ -241,9 +282,16 @@ multi-tenant.
 **Fix.** Validar `location` contra `^[a-z0-9-]+$` o `global` en el constructor.
 `urllib.parse.quote` sobre `project_id` y `model` al armar el path.
 
+**✅ Implementado.** `_validate_location()` con `^[a-z0-9]+(?:-[a-z0-9]+)*$`
+aplicado en el constructor del mixin, y `quote(..., safe='')` sobre
+`project_id`, `publisher`, `model` y `action`. La regex rechaza también los
+casos de borde (`-us-central1`, `us-central1-`, mayúsculas), y hay un test que
+fija la URL exacta de un caso legítimo para que el escapado no altere nombres
+de modelo normales.
+
 ---
 
-### S6 — El RunLog forense se escribe world-readable y sin redactar contenido · **Medio**
+### S6 — El RunLog forense se escribe world-readable y sin redactar contenido · **Medio** · ✅ Corregido
 
 ```python
 # debug.py:84-89
@@ -271,6 +319,17 @@ precisamente el escenario donde más duele.
 que `debug=True` persiste contenido sin redactar. Ofrecer un hook de redacción
 para argumentos/resultados de tools.
 
+**✅ Implementado (permisos).** `write_json` escribe 0600 y un nuevo
+`secure_mkdir()` crea los folders 0700; todos los `mkdir` de RunLog en
+`debug.py` y `loop/debug.py` pasan por él. El `chmod` explícito es necesario
+además del `mode=`: `mkdir` aplica el umask sobre el mode y no hace nada si el
+directorio ya existía, así que sin él un folder creado por una versión anterior
+se quedaba permisivo para siempre. Los `chmod` van en `try/except OSError` para
+no romper en filesystems sin permisos POSIX.
+
+**Pendiente:** el hook de redacción de argumentos/resultados. Los permisos
+acotan quién lee el archivo, no qué contiene.
+
 ---
 
 ### S7 — Menores
@@ -291,7 +350,7 @@ de parámetro `token_uri`); el `B110` es S7.4, que sí vale la pena arreglar.
 
 ## 2. Arquitectura y correctitud
 
-### A1 — El system prompt se descarta si `role_setup` está vacío · **Alto (bug funcional)**
+### A1 — El system prompt se descarta si `role_setup` está vacío · **Alto (bug funcional)** · ✅ Corregido
 
 ```python
 # core.py:800-804
@@ -327,6 +386,11 @@ dejar `role_setup` para la identidad — el patrón documentado es exactamente e
 que dispara el bug.
 
 **Fix.** `if final_role_setup:`.
+
+**✅ Implementado.** Los tests de regresión fijan además la **paridad**:
+el mensaje `system` que sale por `_prepare_messages` tiene que ser idéntico a
+lo que devuelve `get_resolved_role_setup()`, que es lo que el RunLog persiste.
+Esa es la garantía de que el log no vuelva a divergir de lo enviado.
 
 ---
 
@@ -559,21 +623,31 @@ en GitHub.
 Ordenado por (impacto × facilidad). Los tres primeros son de bajo esfuerzo y alto
 retorno.
 
-### Ahora — correcciones puntuales
+### Ahora — correcciones puntuales · ✅ Completado
 
-| # | Acción | Esfuerzo |
+| # | Acción | Estado |
 |---|---|---|
-| A1 | `if final_role_setup:` en `_prepare_messages` | 1 línea |
-| S1 | Pasar `active_tools` a `_handle_tool_calls` y validar contra él | ~10 líneas |
-| S6 | `chmod 0600` / `mkdir(mode=0o700)` en `write_json` y en los folders de RunLog | ~5 líneas |
-| S5 | Validar `location` con regex; `quote()` sobre `project_id` y `model` | ~8 líneas |
-| A6.2 | Colapsar las ramas duplicadas de `WAIT_RESPONSE` | ~15 líneas menos |
+| A1 | `if final_role_setup:` en `_prepare_messages` | ✅ + tests de paridad |
+| S1 | Pasar `active_tools` a `_handle_tool_calls` y validar contra él | ✅ gate fail-closed en las 4 rutas |
+| S6 | `chmod 0600` / `mkdir(mode=0o700)` en `write_json` y en los folders de RunLog | ✅ vía `secure_mkdir()` |
+| S5 | Validar `location` con regex; `quote()` sobre `project_id` y `model` | ✅ `_validate_location()` |
+| A6.2 | Colapsar las ramas duplicadas de `WAIT_RESPONSE` | ✅ |
+
+Extras que aparecieron al implementar: el `json.loads` envuelto en las cuatro
+rutas (parte de S2), la rama streaming `EXECUTION_ONLY` que no validaba scope en
+absoluto, y un `UnboundLocalError` latente en esa misma rama.
+
+Suite: **420 → 448 tests**, todos en verde. Los nuevos viven en
+`tests/core/test_tool_scope_enforcement.py`,
+`tests/core/test_system_prompt_composition.py`,
+`tests/adapters/test_vertex_endpoint_hardening.py` y
+`tests/debug/test_runlog_permissions.py`.
 
 ### Siguiente — el borde de ejecución
 
 | # | Acción |
 |---|---|
-| S2 | Capa de validación de argumentos derivada del schema, entre `json.loads` y la invocación. Errores de validación vuelven al modelo como resultado de tool, no como excepción. |
+| S2 | Capa de validación de argumentos derivada del schema: coerción de tipos, `required`, rechazo de kwargs desconocidos, `enum`. (El manejo de JSON malformado ya está hecho.) |
 | S3 | Definir `parameters` como allowlist; emitir `additionalProperties: false` |
 | A2 | Retry con backoff exponencial + jitter en la capa de fetchers, honrando `Retry-After` |
 | S4 | Endurecer `download_image_to_base64`: allowlist de esquema, bloqueo de rangos privados revalidado por redirect, `max_bytes` con lectura por chunks |

@@ -17,10 +17,30 @@ Requiere 'cryptography' para firmar JWTs con Service Account:
 """
 
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 import base64
 import httpx
 import json
+import re
 import time
+
+
+# Locations válidas de Vertex: regiones tipo `us-central1`, `europe-west4`,
+# o el literal `global`. Se valida porque `location` entra en posición de
+# HOSTNAME al construir el endpoint: un valor con `/`, `@` o `:` redirige
+# la request —y con ella el Bearer token de la service account— a un host
+# arbitrario.
+_LOCATION_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _validate_location(location: str) -> str:
+    """Valida que ``location`` sea segura para interpolar como hostname."""
+    if not isinstance(location, str) or not _LOCATION_RE.match(location):
+        raise ValueError(
+            f"location inválida: {location!r}. Se espera una región de Vertex AI "
+            f"(p. ej. 'us-central1', 'europe-west4') o 'global'."
+        )
+    return location
 
 
 # ============================================================================
@@ -183,7 +203,7 @@ class VertexAuthMixin:
         access_token: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
     ):
-        self.location = location
+        self.location = _validate_location(location)
         self.timeout = timeout
         self.project_id: Optional[str] = None
 
@@ -238,10 +258,15 @@ class VertexAuthMixin:
         Formato:
             https://{host}/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:{action}
         """
+        # quote() en los segmentos de path: `project_id` y `model` vienen
+        # del service account JSON y del caller respectivamente, y sin
+        # escapar permiten salirse del path con `../`.
         return (
             f"https://{self._vertex_host()}/v1/"
-            f"projects/{self.project_id}/locations/{self.location}/"
-            f"publishers/{publisher}/models/{model}:{action}"
+            f"projects/{quote(str(self.project_id), safe='')}/"
+            f"locations/{self.location}/"
+            f"publishers/{quote(publisher, safe='')}/"
+            f"models/{quote(model, safe='')}:{quote(action, safe='')}"
         )
 
     def _vertex_openai_compat_endpoint(self) -> str:
@@ -258,7 +283,8 @@ class VertexAuthMixin:
         """
         return (
             f"https://{self._vertex_host()}/v1/"
-            f"projects/{self.project_id}/locations/{self.location}/"
+            f"projects/{quote(str(self.project_id), safe='')}/"
+            f"locations/{self.location}/"
             f"endpoints/openapi/chat/completions"
         )
 

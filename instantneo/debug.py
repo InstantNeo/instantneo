@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
+import os
 import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -32,6 +34,8 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from instantneo.core import InstantNeo
     from instantneo.models.run_info import RunInfo
+
+logger = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -74,19 +78,47 @@ def sanitize_secrets(config: dict) -> dict:
     }
 
 
+def secure_mkdir(path: Path) -> Path:
+    """``mkdir -p`` con permisos 0700 (solo el owner).
+
+    Los folders de RunLog contienen prompts, argumentos y resultados de
+    tools sin redactar. Con el umask habitual (022) quedarían 0755 —
+    legibles por cualquier usuario local del host.
+
+    El ``chmod`` explícito es necesario además del ``mode=``: ``mkdir``
+    aplica el umask sobre el mode, y no hace nada si el directorio ya
+    existía.
+    """
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:  # p. ej. filesystems sin soporte de permisos POSIX
+        logger.debug("No se pudieron ajustar los permisos de %s", path)
+    return path
+
+
 def write_json(path: Path, data: dict) -> None:
-    """Escribe ``data`` como JSON a ``path``.
+    """Escribe ``data`` como JSON a ``path``, con permisos 0600.
 
     Usa ``default=str`` para tipos no estándar (datetime, etc.) y
     ``ensure_ascii=False`` para preservar utf-8 correctamente.
     Indent=2 para legibilidad humana.
+
+    El contenido persistido incluye prompts y resultados de tools sin
+    redactar (``sanitize_secrets`` solo cubre las keys del config), así
+    que el archivo se restringe al owner.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_mkdir(path.parent)
     path.write_text(
         json.dumps(data, default=str, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        logger.debug("No se pudieron ajustar los permisos de %s", path)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -372,8 +404,7 @@ def write_agent_call_log(
             "de write_agent_call_log()."
         )
 
-    folder = Path(path).resolve()
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = secure_mkdir(Path(path).resolve())
 
     run_info = agent.last_run
     cid = call_id or uuid.uuid4().hex

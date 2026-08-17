@@ -686,10 +686,10 @@ Args:
             # For streaming, assign run_info before returning the generator.
             # The generator populates it progressively as chunks are consumed.
             self._last_run = run_info
-            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, start_time, think_loud)
+            return self._handle_streaming_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, start_time, think_loud, active_tools=active_tools)
         else:
             try:
-                result = self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, think_loud)
+                result = self._handle_normal_response(adapter_params, run_params.execution_mode, run_params.return_full_response, run_info, think_loud, active_tools=active_tools)
                 run_info.duration_ms = (time.perf_counter() - start_time) * 1000
                 return result
             except Exception as e:
@@ -799,7 +799,13 @@ Args:
         # legibilidad del resto del método.
         final_role_setup = self.get_resolved_role_setup(shelf_context)
 
-        if self.config.role_setup:
+        # El guard mira el string compuesto, no solo `role_setup`: un agente
+        # sin role_setup pero con `global_instructions` en sus capabilities
+        # (o con shelf context activo) igual tiene system prompt que mandar.
+        # Condicionar sobre `self.config.role_setup` lo descartaba en
+        # silencio, y además desalineaba lo enviado de lo que reporta
+        # `get_resolved_role_setup()` — que es lo que el RunLog persiste.
+        if final_role_setup:
             messages.append(
                 {"role": "system", "content": final_role_setup})
         if image_config and image_config.images:
@@ -811,7 +817,9 @@ Args:
             messages.append({"role": "user", "content": prompt})
         return messages
 
-    def _process_response(self, response, execution_mode, run_info: Optional[RunInfo] = None, think_loud: bool = False):
+    def _process_response(self, response, execution_mode, run_info: Optional[RunInfo] = None,
+                          think_loud: bool = False,
+                          *, active_tools: Dict[str, Callable]):
         """Process the response from the language model."""
         if not hasattr(response, 'choices') or len(response.choices) == 0:
             return None
@@ -828,7 +836,8 @@ Args:
 
         if tool_calls:
             logger.debug("Executing %d tool call(s)", len(tool_calls))
-            results = self._handle_tool_calls(tool_calls, execution_mode, run_info)
+            results = self._handle_tool_calls(
+                tool_calls, execution_mode, run_info, active_tools=active_tools)
             result = {
                 "text": content if content else None,
                 "tool_results": results
@@ -841,70 +850,117 @@ Args:
                 return {"text": content, "reasoning": reasoning}
             return content
 
-    def _handle_tool_calls(self, tool_calls, execution_mode, run_info: Optional[RunInfo] = None):
-        """Handle tool calls from the language model."""
+    @staticmethod
+    def _record_tool_execution(run_info: Optional[RunInfo], name: str,
+                               arguments: Dict[str, Any], execution_mode: str,
+                               result: Any = None, exception: Optional[str] = None) -> None:
+        """Registra una ToolExecution en el RunInfo si lo hay.
+
+        Que las llamadas descartadas (args inválidos, fuera de scope)
+        queden en el RunInfo es lo que las hace visibles en History y en
+        el RunLog, en vez de perderse en un log de warnings.
+        """
+        if run_info is None:
+            return
+        run_info.tool_executions.append(ToolExecution(
+            name=name,
+            arguments=arguments,
+            execution_mode=execution_mode,
+            result=result,
+            exception=exception,
+        ))
+
+    def _handle_tool_calls(self, tool_calls, execution_mode, run_info: Optional[RunInfo] = None,
+                           *, active_tools: Dict[str, Callable]):
+        """Handle tool calls from the language model.
+
+        Args:
+            active_tools: scope de tools ejecutables en este run (el que
+                ``run()`` calculó a partir de su argumento ``tools``).
+                Toda invocación se valida contra este conjunto: un
+                tool_call fuera del scope se registra como violación y
+                **no se ejecuta**. Obligatorio y keyword-only: sin
+                default permisivo, para que ningún call site futuro
+                pueda desactivar el gate por omisión.
+        """
         results = []
         futures = []  # Para almacenar futures en caso de ejecución asíncrona
 
         for tool_call in tool_calls:
-            if tool_call.type == 'function':
-                function_name = tool_call.function.name
-                # `or {}` defensivo: si por cualquier ruta el adapter
-                # dejó pasar args == None / "null" (JSON parsea a None),
-                # tratamos como llamada sin args en lugar de crashear con
-                # `tool_func(**None)`. El adapter ya normaliza a "{}"
-                # (ver `_chat_completions._normalize_tool_arguments`),
-                # esto es cinturón de seguridad para otras rutas.
+            if tool_call.type != 'function':
+                continue
+
+            function_name = tool_call.function.name
+
+            # `or {}` defensivo: si por cualquier ruta el adapter
+            # dejó pasar args == None / "null" (JSON parsea a None),
+            # tratamos como llamada sin args en lugar de crashear con
+            # `tool_func(**None)`. El adapter ya normaliza a "{}"
+            # (ver `_chat_completions._normalize_tool_arguments`),
+            # esto es cinturón de seguridad para otras rutas.
+            try:
                 function_args = json.loads(tool_call.function.arguments) or {}
+            except (TypeError, ValueError) as e:
+                # Un provider que devuelve JSON truncado o malformado no
+                # debe tumbar el run entero (y con él, en un Loop, todos
+                # los steps ya pagados).
+                logger.warning(
+                    "Argumentos inválidos para la tool '%s': %s. Se omite la llamada.",
+                    function_name, e,
+                )
+                self._record_tool_execution(
+                    run_info, function_name, {}, execution_mode,
+                    exception=f"Argumentos JSON inválidos: {e}",
+                )
+                continue
 
-                if function_name in self.get_tool_names():
-                    tool_func = self.get_tool_by_name(function_name)
+            tool_exec = ToolExecution(
+                name=function_name,
+                arguments=function_args,
+                execution_mode=execution_mode,
+            )
 
-                    # Track tool execution
-                    tool_exec = ToolExecution(
-                        name=function_name,
-                        arguments=function_args,
-                        execution_mode=execution_mode,
-                    )
+            # ── Gate de scope ──────────────────────────────────────
+            # Se valida contra el scope del run, no contra el registro
+            # completo del agente. Antes esto miraba `get_tool_names()`,
+            # con lo cual `run(tools=[...])` solo filtraba los schemas
+            # que veía el modelo y no lo que efectivamente se ejecutaba.
+            if not self._is_tool_in_scope(function_name, active_tools):
+                logger.warning(
+                    "Tool '%s' fuera del scope de este run (disponibles: %s). No se ejecuta.",
+                    function_name, sorted(self._scope_names(active_tools)),
+                )
+                tool_exec.exception = (
+                    f"Tool '{function_name}' fuera del scope de este run. No se ejecutó."
+                )
+                if run_info:
+                    run_info.tool_executions.append(tool_exec)
+                continue
 
-                    if execution_mode == self.EXECUTION_ONLY:
-                        try:
-                            result = self._execute_tool(
-                                function_name, function_args)
-                            tool_exec.result = result
-                        except Exception as e:
-                            tool_exec.exception = str(e)
-                            raise
-                        if self.async_execution:
-                            futures.append(result)
-                    elif execution_mode == self.GET_ARGS:
-                        tool_exec.result = {"name": function_name, "arguments": function_args}
-                        results.append(
-                            {"name": function_name, "arguments": function_args})
-                    else:  # WAIT_RESPONSE
-                        if self.async_execution:
-                            try:
-                                result = self._execute_tool(
-                                    function_name, function_args)
-                                tool_exec.result = result
-                                results.append(result)
-                            except Exception as e:
-                                tool_exec.exception = str(e)
-                                raise
-                        else:
-                            try:
-                                result = self._execute_tool(
-                                    function_name, function_args)
-                                tool_exec.result = result
-                                results.append(result)
-                            except Exception as e:
-                                tool_exec.exception = str(e)
-                                raise
-
+            if execution_mode == self.GET_ARGS:
+                tool_exec.result = {"name": function_name, "arguments": function_args}
+                results.append({"name": function_name, "arguments": function_args})
+            else:
+                # EXECUTION_ONLY y WAIT_RESPONSE ejecutan igual; solo
+                # difieren en dónde va el resultado.
+                try:
+                    result = self._execute_tool(
+                        function_name, function_args, active_tools)
+                    tool_exec.result = result
+                except Exception as e:
+                    tool_exec.exception = str(e)
                     if run_info:
                         run_info.tool_executions.append(tool_exec)
-                else:
-                    logger.warning("Tool '%s' not found in available tools.", function_name)
+                    raise
+
+                if execution_mode == self.EXECUTION_ONLY:
+                    if self.async_execution:
+                        futures.append(result)
+                else:  # WAIT_RESPONSE
+                    results.append(result)
+
+            if run_info:
+                run_info.tool_executions.append(tool_exec)
 
         # Si estamos en modo WAIT_RESPONSE y async_execution=True, ejecutamos todas las corrutinas
         # de manera síncrona para esperar los resultados
@@ -954,9 +1010,40 @@ Args:
         else:  # WAIT_RESPONSE
             return results[0] if len(results) == 1 else results
 
-    def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]):
-        """Execute a tool with the given arguments."""
-        tool_func = self.get_tool_by_name(tool_name)
+    @staticmethod
+    def _scope_names(active_tools: Dict[str, Callable]) -> set:
+        """Nombres de tools ejecutables bajo ``active_tools``."""
+        return set(active_tools or {})
+
+    def _is_tool_in_scope(self, tool_name: str,
+                          active_tools: Dict[str, Callable]) -> bool:
+        """True si ``tool_name`` puede ejecutarse en este run."""
+        return tool_name in self._scope_names(active_tools)
+
+    def _execute_tool(self, tool_name: str, arguments: Dict[str, Any],
+                      active_tools: Dict[str, Callable]):
+        """Execute a tool with the given arguments.
+
+        Punto único de resolución y de aplicación del scope. Antes la
+        tool se resolvía dos veces por caminos independientes (aquí y en
+        el caller), que es justamente por qué el chequeo de scope se
+        había desalineado de la ejecución.
+
+        ``active_tools`` es obligatorio y no tiene default permisivo a
+        propósito: un gate de seguridad que desaparece cuando el caller
+        omite un argumento reproduce exactamente el bug que este gate
+        corrige. Para ejecutar contra el registro completo hay que
+        pedirlo explícitamente::
+
+            agent._execute_tool(name, args, agent._get_active_tools(
+                agent.get_tool_names()))
+        """
+        if tool_name not in (active_tools or {}):
+            raise ValueError(
+                f"Tool '{tool_name}' fuera del scope de este run "
+                f"(disponibles: {sorted(active_tools or {})})"
+            )
+        tool_func = active_tools[tool_name]
 
         if tool_func is None:
             raise ValueError(f"Tool not found: {tool_name}")
@@ -967,7 +1054,8 @@ Args:
             tool_func = next(iter(tool_func.values())) if isinstance(tool_func, dict) else tool_func
             return tool_func(**arguments)
 
-    def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, start_time: float, think_loud: bool = False):
+    def _handle_streaming_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, start_time: float, think_loud: bool = False,
+                                   *, active_tools: Dict[str, Callable]):
         """Handle streaming responses from the language model."""
         from instantneo.models.standard import StandardStreamChunk
 
@@ -1103,17 +1191,51 @@ Args:
                 futures = []
                 for tool_call in tool_calls:
                     function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
+                    try:
+                        function_args = json.loads(tool_call.function.arguments) or {}
+                    except (TypeError, ValueError) as e:
+                        logger.warning(
+                            "Argumentos inválidos para la tool '%s': %s. Se omite la llamada.",
+                            function_name, e,
+                        )
+                        self._record_tool_execution(
+                            run_info, function_name, {}, execution_mode,
+                            exception=f"Argumentos JSON inválidos: {e}",
+                        )
+                        continue
+
                     tool_exec = ToolExecution(
                         name=function_name,
                         arguments=function_args,
                         execution_mode=execution_mode,
                     )
+
+                    # Esta rama no validaba el scope en absoluto — ni contra
+                    # el registro completo.
+                    if not self._is_tool_in_scope(function_name, active_tools):
+                        logger.warning(
+                            "Tool '%s' fuera del scope de este run (disponibles: %s). No se ejecuta.",
+                            function_name, sorted(self._scope_names(active_tools)),
+                        )
+                        tool_exec.exception = (
+                            f"Tool '{function_name}' fuera del scope de este run. No se ejecutó."
+                        )
+                        run_info.tool_executions.append(tool_exec)
+                        continue
+
                     try:
-                        result = self._execute_tool(function_name, function_args)
+                        result = self._execute_tool(
+                            function_name, function_args, active_tools)
                         tool_exec.result = result
                     except Exception as e:
                         tool_exec.exception = str(e)
+                        run_info.tool_executions.append(tool_exec)
+                        # `result` queda sin asignar si esto falla: seguir
+                        # habría hecho `futures.append(result)` sobre la
+                        # variable del ciclo anterior (o UnboundLocalError
+                        # en la primera vuelta).
+                        continue
+
                     run_info.tool_executions.append(tool_exec)
                     if self.async_execution:
                         futures.append(result)
@@ -1160,38 +1282,51 @@ Args:
                 futures = []
 
                 for tool_call in tool_calls:
-                    if hasattr(tool_call, 'function'):
-                        function_name = tool_call.function.name
-                        function_args = json.loads(
-                            tool_call.function.arguments)
+                    if not hasattr(tool_call, 'function'):
+                        continue
 
-                        tool_exec = ToolExecution(
-                            name=function_name,
-                            arguments=function_args,
-                            execution_mode=execution_mode,
+                    function_name = tool_call.function.name
+                    try:
+                        function_args = json.loads(tool_call.function.arguments) or {}
+                    except (TypeError, ValueError) as e:
+                        logger.warning(
+                            "Argumentos inválidos para la tool '%s': %s. Se omite la llamada.",
+                            function_name, e,
                         )
+                        self._record_tool_execution(
+                            run_info, function_name, {}, execution_mode,
+                            exception=f"Argumentos JSON inválidos: {e}",
+                        )
+                        continue
 
-                        if function_name in self.get_tool_names():
-                            if self.async_execution:
-                                try:
-                                    result = self._execute_tool(
-                                        function_name, function_args)
-                                    tool_exec.result = result
-                                    futures.append(result)
-                                except Exception as e:
-                                    tool_exec.exception = str(e)
-                            else:
-                                try:
-                                    result = self._execute_tool(
-                                        function_name, function_args)
-                                    tool_exec.result = result
-                                    results.append(result)
-                                except Exception as e:
-                                    tool_exec.exception = str(e)
-                        else:
-                            logger.warning("Tool '%s' not found in available tools.", function_name)
+                    tool_exec = ToolExecution(
+                        name=function_name,
+                        arguments=function_args,
+                        execution_mode=execution_mode,
+                    )
 
+                    if not self._is_tool_in_scope(function_name, active_tools):
+                        logger.warning(
+                            "Tool '%s' fuera del scope de este run (disponibles: %s). No se ejecuta.",
+                            function_name, sorted(self._scope_names(active_tools)),
+                        )
+                        tool_exec.exception = (
+                            f"Tool '{function_name}' fuera del scope de este run. No se ejecutó."
+                        )
                         run_info.tool_executions.append(tool_exec)
+                        continue
+
+                    # async y sync ejecutan igual; solo difieren en la
+                    # lista donde cae el resultado.
+                    try:
+                        result = self._execute_tool(
+                            function_name, function_args, active_tools)
+                        tool_exec.result = result
+                        (futures if self.async_execution else results).append(result)
+                    except Exception as e:
+                        tool_exec.exception = str(e)
+
+                    run_info.tool_executions.append(tool_exec)
 
 
                 # Si hay futures pendientes, esperamos a que terminen
@@ -1232,7 +1367,8 @@ Args:
         # Finalize timing
         run_info.duration_ms = (time.perf_counter() - start_time) * 1000
 
-    def _handle_normal_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, think_loud: bool = False):
+    def _handle_normal_response(self, adapter_params: AdapterParams, execution_mode: str, return_full_response: bool, run_info: RunInfo, think_loud: bool = False,
+                                *, active_tools: Dict[str, Callable]):
         """Handle normal (non-streaming) responses from the language model."""
         response = self.adapter.create_chat_completion(
             **adapter_params.to_dict())
@@ -1284,7 +1420,9 @@ Args:
             run_info.finish_reason = llm_call.finish_reason
             return response
         else:
-            result = self._process_response(response, execution_mode, run_info, think_loud)
+            result = self._process_response(
+                response, execution_mode, run_info, think_loud,
+                active_tools=active_tools)
             run_info.response_content = llm_call.response_content
             run_info.finish_reason = llm_call.finish_reason
             return result
