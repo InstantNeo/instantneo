@@ -23,10 +23,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,vertexai]"
 
       - name: Run test suite
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --cov=instantneo --cov-report=term-missing --cov-fail-under=70
 
   check-version:
     runs-on: ubuntu-latest

@@ -90,7 +90,7 @@ class GeminiAdapter(BaseAdapter):
             return self._translate_response(response, request.model)
 
         except Exception as e:
-            raise RuntimeError(f"Error en Gemini API: {str(e)}")
+            raise RuntimeError(f"Error en Gemini API: {e}") from e
 
     def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
         """
@@ -130,7 +130,7 @@ class GeminiAdapter(BaseAdapter):
                     yield translated
 
         except Exception as e:
-            raise RuntimeError(f"Error en Gemini API streaming: {str(e)}")
+            raise RuntimeError(f"Error en Gemini API streaming: {e}") from e
 
     def supports_images(self) -> bool:
         """Gemini soporta imágenes."""

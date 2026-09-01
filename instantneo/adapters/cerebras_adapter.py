@@ -85,7 +85,7 @@ class CerebrasAdapter(BaseAdapter):
             return self._translate_response(response)
 
         except Exception as e:
-            raise RuntimeError(f"Error en Cerebras API: {str(e)}")
+            raise RuntimeError(f"Error en Cerebras API: {e}") from e
 
     def complete_stream(self, request: StandardRequest) -> Iterator[StandardStreamChunk]:
         """
@@ -128,7 +128,7 @@ class CerebrasAdapter(BaseAdapter):
                 yield self._translate_stream_chunk(chunk)
 
         except Exception as e:
-            raise RuntimeError(f"Error en Cerebras API streaming: {str(e)}")
+            raise RuntimeError(f"Error en Cerebras API streaming: {e}") from e
 
     def supports_images(self) -> bool:
         """Cerebras soporta imágenes con modelos de visión."""

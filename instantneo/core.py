@@ -735,7 +735,7 @@ Args:
         """Process images according to the configuration."""
         if not self.adapter.supports_images():
             raise ValueError(
-                f"El proveedor actual no soporta el procesamiento de imágenes")
+                "El proveedor actual no soporta el procesamiento de imágenes")
         return process_images(image_config.images, image_config.image_detail)
 
     def get_resolved_role_setup(self, shelf_context: Optional[str] = None) -> str:
@@ -858,8 +858,6 @@ Args:
                 function_args = json.loads(tool_call.function.arguments) or {}
 
                 if function_name in self.get_tool_names():
-                    tool_func = self.get_tool_by_name(function_name)
-
                     # Track tool execution
                     tool_exec = ToolExecution(
                         name=function_name,
@@ -1329,6 +1327,15 @@ Args:
             "openai": ("instantneo.adapters.openai_adapter", "OpenAIAdapter"),
             "anthropic": ("instantneo.adapters.anthropic_adapter", "AnthropicAdapter"),
             "groq": ("instantneo.adapters.groq_adapter", "GroqAdapter"),
+            "deepseek": ("instantneo.adapters.deepseek_adapter", "DeepSeekAdapter"),
+            "mistral": ("instantneo.adapters.mistral_adapter", "MistralAdapter"),
+            "qwen": ("instantneo.adapters.qwen_adapter", "QwenAdapter"),
+            "kimi": ("instantneo.adapters.kimi_adapter", "KimiAdapter"),
+            "moonshot": ("instantneo.adapters.kimi_adapter", "KimiAdapter"),
+            "zhipu": ("instantneo.adapters.zhipu_adapter", "ZhipuAdapter"),
+            "glm": ("instantneo.adapters.zhipu_adapter", "ZhipuAdapter"),
+            "mimo": ("instantneo.adapters.mimo_adapter", "MiMoAdapter"),
+            "xiaomi_mimo": ("instantneo.adapters.mimo_adapter", "MiMoAdapter"),
             "cerebras": ("instantneo.adapters.cerebras_adapter", "CerebrasAdapter"),
             "gemini": ("instantneo.adapters.gemini_adapter", "GeminiAdapter"),
             "vertexai": ("instantneo.adapters.vertex_gemini_adapter", "VertexGeminiAdapter"),

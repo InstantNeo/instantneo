@@ -117,6 +117,36 @@ try:
 except ImportError:
     GroqAdapter = None
 
+try:
+    from .adapters.deepseek_adapter import DeepSeekAdapter
+except ImportError:
+    DeepSeekAdapter = None
+
+try:
+    from .adapters.mistral_adapter import MistralAdapter
+except ImportError:
+    MistralAdapter = None
+
+try:
+    from .adapters.qwen_adapter import QwenAdapter
+except ImportError:
+    QwenAdapter = None
+
+try:
+    from .adapters.kimi_adapter import KimiAdapter
+except ImportError:
+    KimiAdapter = None
+
+try:
+    from .adapters.zhipu_adapter import ZhipuAdapter
+except ImportError:
+    ZhipuAdapter = None
+
+try:
+    from .adapters.mimo_adapter import MiMoAdapter
+except ImportError:
+    MiMoAdapter = None
+
 
 # ── v2: History + Monitor + Loop + queries + bridge ─────────────────
 from .history import History, Entry
@@ -147,6 +177,14 @@ class Skills:
 class Adapters:
     """Adapters for different providers"""
     Groq = GroqAdapter
+    DeepSeek = DeepSeekAdapter
+    Mistral = MistralAdapter
+    Qwen = QwenAdapter
+    Kimi = KimiAdapter
+    Moonshot = KimiAdapter
+    Zhipu = ZhipuAdapter
+    GLM = ZhipuAdapter
+    MiMo = MiMoAdapter
     Openai = OpenAIAdapter
     Anthropic = AnthropicAdapter
 
