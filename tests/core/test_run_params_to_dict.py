@@ -156,3 +156,14 @@ if __name__ == "__main__":
     print(f"PASS: {total - len(failures)} / {total}")
     if failures:
         sys.exit(1)
+
+
+def test_runparams_tools_default_is_none() -> None:
+    """A trailing comma used to make ``tools`` default ``(None,)`` instead of None."""
+    import dataclasses
+
+    field = next(f for f in dataclasses.fields(RunParams) if f.name == "tools")
+    assert field.default is None
+    rp = RunParams(prompt="x", model="m")
+    assert rp.tools is None
+    assert rp.to_dict().get("tools") is None

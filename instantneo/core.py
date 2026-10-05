@@ -53,7 +53,7 @@ class RunParams(BaseParams):
     execution_mode: str = "wait_response"
     async_execution: bool = False
     return_full_response: bool = False
-    tools: Optional[List[str]] = None,
+    tools: Optional[List[str]] = None
     images: Optional[Union[str, List[str]]] = None
     image_detail: Optional[str] = None
     additional_params: Dict[str, Any] = field(default_factory=dict)
